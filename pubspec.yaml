@@ -1,0 +1,25 @@
+name: flutter_android_browser
+description: 参考 Via 浏览器实现的 Flutter 浏览器：首页 / 网页浏览 / 设置 / 内置下载器。
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  webview_flutter: ^4.10.0
+  webview_flutter_android: ^4.10.0
+  shared_preferences: ^2.2.3
+  path_provider: ^2.1.4
+  http: ^1.2.0
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
