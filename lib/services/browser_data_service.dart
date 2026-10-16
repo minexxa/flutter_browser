@@ -18,6 +18,7 @@ class BrowserDataService {
   static const String _bookmarksKey = 'bookmarks_v1';
   static const String _passwordsKey = 'saved_passwords_v1';
   static const String _neverSaveHostsKey = 'never_save_hosts_v1';
+  static const String _searchHistoryKey = 'search_history_v1';
   static const int _historyLimit = 200;
 
   List<QuickLink>? _quickLinks;
@@ -290,5 +291,41 @@ class BrowserDataService {
     if (host.isEmpty) return false;
     final hosts = await neverSaveHosts();
     return hosts.contains(host);
+  }
+
+  // ---- 搜索历史 ----
+
+  static const int _searchHistoryLimit = 100;
+
+  /// 搜索历史（最新在前）
+  Future<List<String>> searchHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(_searchHistoryKey) ?? const [];
+  }
+
+  /// 记录一条搜索词：去重后置顶，超出上限丢弃最旧
+  Future<void> addSearchHistory(String query) async {
+    final text = query.trim();
+    if (text.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final list = List<String>.from(prefs.getStringList(_searchHistoryKey) ?? []);
+    list.removeWhere((e) => e == text);
+    list.insert(0, text);
+    if (list.length > _searchHistoryLimit) {
+      list.removeRange(_searchHistoryLimit, list.length);
+    }
+    await prefs.setStringList(_searchHistoryKey, list);
+  }
+
+  Future<void> removeSearchHistory(String query) async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = List<String>.from(prefs.getStringList(_searchHistoryKey) ?? []);
+    list.remove(query);
+    await prefs.setStringList(_searchHistoryKey, list);
+  }
+
+  Future<void> clearSearchHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_searchHistoryKey);
   }
 }

@@ -46,6 +46,19 @@ class SettingsService extends ChangeNotifier {
   final Map<String, dynamic> _values = {
     'searchEngine': 'baidu',
     'customSearchUrl': '',
+    'searchQuickWords': <String, String>{},
+    'searchSuggestions': true,
+    'suggestFromSearchEngine': true,
+    'suggestFromHistory': true,
+    'suggestFromBookmarks': true,
+    'searchHistoryEnabled': true,
+    'searchBoxStyle': 'line',
+    'searchBoxBlur': false,
+    'addressBarContent': 'url',
+    'searchToolbar': false,
+    'searchToolbarPosition': 'top',
+    'tabBarEnabled': false,
+    'cookieAccept': true,
     'browserIdentity': 'android',
     'customUserAgent': '',
     'fontSizeLevel': 2,
@@ -77,6 +90,37 @@ class SettingsService extends ChangeNotifier {
 
   String get searchEngine => _values['searchEngine'] as String;
   String get customSearchUrl => _values['customSearchUrl'] as String;
+
+  /// 搜索引擎快捷词：engineKey -> 快捷词（如 g -> google）
+  Map<String, String> get searchQuickWords {
+    final raw = _values['searchQuickWords'];
+    if (raw is Map) {
+      return raw.map((k, v) => MapEntry(k.toString(), v.toString()));
+    }
+    return const {};
+  }
+
+  bool get searchSuggestions => _values['searchSuggestions'] as bool;
+  bool get suggestFromSearchEngine => _values['suggestFromSearchEngine'] as bool;
+  bool get suggestFromHistory => _values['suggestFromHistory'] as bool;
+  bool get suggestFromBookmarks => _values['suggestFromBookmarks'] as bool;
+  bool get searchHistoryEnabled => _values['searchHistoryEnabled'] as bool;
+
+  /// 搜索框样式：'line' 线条 / 'rect' 矩形
+  String get searchBoxStyle => _values['searchBoxStyle'] as String;
+
+  /// 搜索框模糊效果
+  bool get searchBoxBlur => _values['searchBoxBlur'] as bool;
+
+  /// 地址栏内容：'url' 网址 / 'domain' 域名 / 'title' 标题
+  String get addressBarContent => _values['addressBarContent'] as String;
+  bool get searchToolbar => _values['searchToolbar'] as bool;
+
+  /// 搜索工具栏位置：'top' / 'bottom'
+  String get searchToolbarPosition =>
+      _values['searchToolbarPosition'] as String;
+  bool get tabBarEnabled => _values['tabBarEnabled'] as bool;
+  bool get cookieAccept => _values['cookieAccept'] as bool;
   String get browserIdentity => _values['browserIdentity'] as String;
   String get customUserAgent => _values['customUserAgent'] as String;
   int get fontSizeLevel => _values['fontSizeLevel'] as int;
@@ -143,6 +187,18 @@ class SettingsService extends ChangeNotifier {
     _persist();
   }
 
+  /// 设置某引擎的快捷词；空串或 null 表示移除
+  void setSearchQuickWord(String engineKey, String? word) {
+    final words = Map<String, String>.from(searchQuickWords);
+    final trimmed = word?.trim() ?? '';
+    if (trimmed.isEmpty) {
+      words.remove(engineKey);
+    } else {
+      words[engineKey] = trimmed;
+    }
+    _set('searchQuickWords', words);
+  }
+
   void setBrowserIdentity(String key, {String customUA = ''}) {
     _values['browserIdentity'] = key;
     _values['customUserAgent'] = customUA;
@@ -166,6 +222,22 @@ class SettingsService extends ChangeNotifier {
   void setKeepScreenOn(bool value) => _set('keepScreenOn', value);
   void setGestureSwitchTab(bool value) => _set('gestureSwitchTab', value);
   void setAdBlock(bool value) => _set('adBlock', value);
+  void setSearchSuggestions(bool value) => _set('searchSuggestions', value);
+  void setSuggestFromSearchEngine(bool value) =>
+      _set('suggestFromSearchEngine', value);
+  void setSuggestFromHistory(bool value) => _set('suggestFromHistory', value);
+  void setSuggestFromBookmarks(bool value) =>
+      _set('suggestFromBookmarks', value);
+  void setSearchHistoryEnabled(bool value) =>
+      _set('searchHistoryEnabled', value);
+  void setSearchBoxStyle(String value) => _set('searchBoxStyle', value);
+  void setSearchBoxBlur(bool value) => _set('searchBoxBlur', value);
+  void setAddressBarContent(String value) => _set('addressBarContent', value);
+  void setSearchToolbar(bool value) => _set('searchToolbar', value);
+  void setSearchToolbarPosition(String value) =>
+      _set('searchToolbarPosition', value);
+  void setTabBarEnabled(bool value) => _set('tabBarEnabled', value);
+  void setCookieAccept(bool value) => _set('cookieAccept', value);
   void setNoImage(bool value) => _set('noImage', value);
   void setSaveData(bool value) => _set('saveData', value);
   void setSavePassword(bool value) => _set('savePassword', value);
