@@ -11,6 +11,7 @@ class BrowserTab {
     this.isLoading = false,
     this.progress = 0,
     this.desktopMode = false,
+    this.incognito = false,
   });
 
   final String id;
@@ -23,4 +24,7 @@ class BrowserTab {
 
   /// 是否对该标签使用电脑版 UA
   bool desktopMode;
+
+  /// 无痕标签：不记录历史，退出时不恢复
+  bool incognito;
 }
