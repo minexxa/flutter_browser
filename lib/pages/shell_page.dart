@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -13,6 +15,7 @@ import '../pages/downloads_page.dart';
 import '../pages/history_page.dart';
 import '../pages/home_page.dart';
 import '../pages/reader_page.dart';
+import '../pages/search_settings_page.dart';
 import '../pages/settings_page.dart';
 import '../pages/site_settings_page.dart';
 import '../pages/sniffer_page.dart';
@@ -50,6 +53,8 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   final GlobalKey<HomePageState> _homeKey = GlobalKey<HomePageState>();
   final TextEditingController _urlController = TextEditingController();
   final FocusNode _urlFocusNode = FocusNode();
+  final TextEditingController _searchToolbarController =
+      TextEditingController();
   final MethodChannel _volumeChannel = const MethodChannel(_volumeChannelName);
 
   bool _canGoBack = false;
@@ -60,6 +65,13 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   double? _edgeDragStartX;
   final TextEditingController _findController = TextEditingController();
 
+  // 地址栏建议
+  final List<String> _suggestions = [];
+  bool _suggestionOpen = false;
+  bool _suggestionLoading = false;
+  int _suggestionRequestId = 0;
+  bool? _appliedCookieAccept;
+
   BrowserTab get _currentTab => _tabs[_currentIndex];
 
   @override
@@ -67,6 +79,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     SettingsService.instance.addListener(_onSettingsChanged);
+    _urlFocusNode.addListener(_onUrlFocusChanged);
     _initApp();
   }
 
@@ -74,10 +87,14 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     SettingsService.instance.removeListener(_onSettingsChanged);
+    _urlFocusNode.removeListener(_onUrlFocusChanged);
     _volumeChannel.setMethodCallHandler(null);
     _urlController.dispose();
     _urlFocusNode.dispose();
+    _searchToolbarController.dispose();
     _findController.dispose();
+    _suggestionDebounce?.cancel();
+    _suggestionHideTimer?.cancel();
     super.dispose();
   }
 
@@ -88,6 +105,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     await SiteSettingsService.instance.init();
     _setupVolumeChannel();
     WakelockPlus.toggle(enable: SettingsService.instance.keepScreenOn);
+    await _applyCookieAccept(SettingsService.instance.cookieAccept);
 
     final settings = SettingsService.instance;
     if (settings.startPage == 'restore') {
@@ -133,6 +151,15 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  /// 全局 Cookie 开关（经原生 CookieManager 实时生效）
+  Future<void> _applyCookieAccept(bool accept) async {
+    if (_appliedCookieAccept == accept) return;
+    _appliedCookieAccept = accept;
+    try {
+      await _cookieChannel.invokeMethod('setAcceptCookie', accept);
+    } catch (_) {}
+  }
+
   void _scrollWebView({required bool down}) {
     if (_tabs.isEmpty || _currentTab.isHome) return;
     final delta = down ? 320 : -320;
@@ -147,6 +174,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     _applyFullscreen();
     _setVolumeScrollEnabled(settings.volumeKeyScroll);
     WakelockPlus.toggle(enable: settings.keepScreenOn);
+    _applyCookieAccept(settings.cookieAccept);
     for (final tab in _tabs) {
       applyFontSize(tab.controller, settings.fontSize.textZoom);
       applyForceZoom(tab.controller, settings.forceZoom);
@@ -157,6 +185,8 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     if (!_currentTab.isHome) {
       _injectScripts(_currentTab);
     }
+    // 搜索工具栏 / 标签栏 / 地址栏内容等 UI 开关需要重建
+    setState(() {});
   }
 
   void _applyFullscreen() {
@@ -254,7 +284,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
           tab.isLoading = true;
           tab.isHome = false;
           if (!_urlFocusNode.hasFocus) {
-            _urlController.text = url;
+            _urlController.text = _displayUrlFor(tab);
           }
         });
         // 站点变化时同步站点设置（JS / Cookie）
@@ -275,7 +305,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
           tab.url = url;
           tab.isLoading = false;
           if (!_urlFocusNode.hasFocus) {
-            _urlController.text = url;
+            _urlController.text = _displayUrlFor(tab);
           }
         });
         if (!tab.incognito) {
@@ -773,6 +803,15 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     );
   }
 
+  void _openSearchSettings() {
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => const SearchSettingsPage(),
+      ),
+    );
+  }
+
   void _openHistory() {
     Navigator.push(
       context,
@@ -789,6 +828,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
       tab.progress = 0;
       tab.isLoading = false;
       tab.controller.loadRequest(Uri.parse('about:blank'));
+      if (!_urlFocusNode.hasFocus) _urlController.clear();
       setState(() {});
       return;
     }
@@ -808,7 +848,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     setState(() {
       _currentIndex = index;
       if (!_urlFocusNode.hasFocus) {
-        _urlController.text = _currentTab.url;
+        _urlController.text = _displayUrlFor(_currentTab);
       }
     });
     // 查找条保持打开时，在新标签上重新执行当前关键字
@@ -822,6 +862,19 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
       }
     }
     _updateNavState();
+  }
+
+  /// 按"地址栏内容"设置计算地址栏显示文本（网址/域名/标题）
+  String _displayUrlFor(BrowserTab tab) {
+    final mode = SettingsService.instance.addressBarContent;
+    if (mode == 'domain') {
+      final host = hostOf(tab.url);
+      return host.isEmpty ? tab.url : host;
+    }
+    if (mode == 'title') {
+      return tab.title.isEmpty ? tab.url : tab.title;
+    }
+    return tab.url;
   }
 
   Future<void> _updateNavState() async {
@@ -839,13 +892,25 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
 
   // ---- 导航 ----
 
-  void _openUrl(String input) {
+  void _openUrl(String input) => _submitInput(input);
+
+  /// 统一输入提交：快捷词 / 搜索历史记录 / 加载
+  void _submitInput(String input, {bool recordSearch = true}) {
+    final settings = SettingsService.instance;
     final url = normalizeInput(
       input,
-      engine: SettingsService.instance.effectiveSearchEngine,
+      engine: settings.effectiveSearchEngine,
+      quickWords: settings.searchQuickWords,
+      customSearchUrl: settings.customSearchUrl,
     );
     if (url.isEmpty) return;
+    if (recordSearch &&
+        settings.searchHistoryEnabled &&
+        isPlainSearchQuery(input)) {
+      BrowserDataService.instance.addSearchHistory(input.trim());
+    }
     _urlFocusNode.unfocus();
+    _hideSuggestions();
     final tab = _currentTab;
     tab.isHome = false;
     tab.controller.loadRequest(Uri.parse(url));
@@ -1076,6 +1141,15 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
                             _openSiteSettings();
                           },
                           enabled: notHome,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.manage_search,
+                          '搜索设置',
+                          () {
+                            Navigator.pop(sheetContext);
+                            _openSearchSettings();
+                          },
                         ),
                         _menuItem(
                           sheetContext,
@@ -1329,6 +1403,19 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
                         backgroundColor: Colors.transparent,
                       )
                     : const SizedBox(height: 2),
+              if (_appReady &&
+                  !_currentTab.isHome &&
+                  SettingsService.instance.tabBarEnabled)
+                _buildTabBar(),
+              if (_appReady &&
+                  !_currentTab.isHome &&
+                  SettingsService.instance.searchToolbar &&
+                  SettingsService.instance.searchToolbarPosition == 'top')
+                _buildSearchToolbar(),
+              if (_appReady &&
+                  !_currentTab.isHome &&
+                  _suggestionOpen)
+                _buildSuggestionPanel(),
               Expanded(
                 child: _appReady
                     ? (_currentTab.isHome
@@ -1343,6 +1430,11 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
                         : _buildWebViewStack())
                     : const SizedBox.shrink(),
               ),
+              if (_appReady &&
+                  !_currentTab.isHome &&
+                  SettingsService.instance.searchToolbar &&
+                  SettingsService.instance.searchToolbarPosition == 'bottom')
+                _buildSearchToolbar(),
               if (_appReady) _buildBottomToolbar(),
             ],
           ),
@@ -1355,6 +1447,374 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     _homeKey.currentState?.reload();
   }
 
+  // ---- 搜索工具栏（Via：启用搜索工具栏） ----
+
+  Widget _buildSearchToolbar() {
+    final theme = Theme.of(context);
+    final settings = SettingsService.instance;
+    final rect = settings.searchBoxStyle == 'rect';
+    final engine = settings.effectiveSearchEngine;
+    return Material(
+      color: theme.colorScheme.surface,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 6),
+        child: SizedBox(
+          height: 40,
+          child: TextField(
+            controller: _searchToolbarController,
+            style: theme.textTheme.bodyMedium,
+            textInputAction: TextInputAction.search,
+            onSubmitted: (value) {
+              if (value.trim().isEmpty) return;
+              _submitInput(value);
+              _searchToolbarController.clear();
+            },
+            decoration: InputDecoration(
+              hintText: '搜索或输入网址',
+              isDense: true,
+              filled: true,
+              fillColor: theme.colorScheme.surfaceContainerHighest,
+              prefixIcon: Padding(
+                padding: const EdgeInsets.only(left: 10, right: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.search, size: 16),
+                    const SizedBox(width: 3),
+                    Text(
+                      engine.label,
+                      style: theme.textTheme.labelSmall,
+                    ),
+                  ],
+                ),
+              ),
+              prefixIconConstraints:
+                  const BoxConstraints(minWidth: 0, minHeight: 0),
+              contentPadding: rect
+                  ? const EdgeInsets.symmetric(horizontal: 12, vertical: 10)
+                  : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              border: rect
+                  ? OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide.none,
+                    )
+                  : const UnderlineInputBorder(),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---- 标签栏 ----
+
+  Widget _buildTabBar() {
+    final theme = Theme.of(context);
+    return Container(
+      height: 38,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        border: Border(
+          bottom: BorderSide(color: theme.colorScheme.outlineVariant),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              itemCount: _tabs.length,
+              itemBuilder: (context, index) {
+                final tab = _tabs[index];
+                final selected = index == _currentIndex;
+                final title = tab.title.isEmpty ? '新标签页' : tab.title;
+                return GestureDetector(
+                  onTap: () => _switchTab(index),
+                  child: Container(
+                    constraints: const BoxConstraints(maxWidth: 140),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      border: Border(
+                        bottom: BorderSide(
+                          color: selected
+                              ? theme.colorScheme.primary
+                              : Colors.transparent,
+                          width: 2,
+                        ),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (tab.incognito) ...[
+                          Icon(Icons.visibility_off_outlined,
+                              size: 13, color: theme.colorScheme.outline),
+                          const SizedBox(width: 3),
+                        ],
+                        Flexible(
+                          child: Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: selected
+                                  ? theme.colorScheme.primary
+                                  : theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 2),
+                        InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => _closeTab(index),
+                          child: Padding(
+                            padding: const EdgeInsets.all(2),
+                            child: Icon(
+                              Icons.close,
+                              size: 13,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.add, size: 18),
+            tooltip: '新建标签页',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _addTab(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---- 地址栏建议 ----
+
+  Timer? _suggestionDebounce;
+  Timer? _suggestionHideTimer;
+
+  void _onUrlFocusChanged() {
+    if (!mounted) return;
+    final settings = SettingsService.instance;
+    final anySource = settings.suggestFromSearchEngine ||
+        settings.suggestFromHistory ||
+        settings.suggestFromBookmarks;
+    if (_urlFocusNode.hasFocus) {
+      _suggestionHideTimer?.cancel();
+      if (!anySource) return;
+      _refreshSuggestions(_urlController.text);
+    } else {
+      _suggestionDebounce?.cancel();
+      _suggestionHideTimer?.cancel();
+      _suggestionHideTimer = Timer(
+        const Duration(milliseconds: 250),
+        _hideSuggestions,
+      );
+    }
+  }
+
+  void _onUrlChanged(String value) {
+    setState(() {});
+    if (!_urlFocusNode.hasFocus) return;
+    final settings = SettingsService.instance;
+    final anySource = settings.suggestFromSearchEngine ||
+        settings.suggestFromHistory ||
+        settings.suggestFromBookmarks;
+    if (!anySource) return;
+    _suggestionDebounce?.cancel();
+    _suggestionDebounce = Timer(
+      const Duration(milliseconds: 300),
+      () => _refreshSuggestions(value),
+    );
+  }
+
+  void _hideSuggestions() {
+    _suggestionRequestId++;
+    _suggestionDebounce?.cancel();
+    _suggestionHideTimer?.cancel();
+    if (!_suggestionOpen && !_suggestionLoading) return;
+    setState(() {
+      _suggestionOpen = false;
+      _suggestionLoading = false;
+      _suggestions.clear();
+    });
+  }
+
+  static bool _suggestMatches(String candidate, String query) {
+    if (query.isEmpty) return true;
+    return candidate.toLowerCase().contains(query.toLowerCase());
+  }
+
+  Future<void> _refreshSuggestions(String query) async {
+    final settings = SettingsService.instance;
+    final text = query.trim();
+    final results = <String>[];
+    final seen = <String>{};
+    void add(String s) {
+      final t = s.trim();
+      if (t.isEmpty || !seen.add(t)) return;
+      results.add(t);
+    }
+
+    if (settings.suggestFromHistory) {
+      if (settings.searchHistoryEnabled) {
+        final searchHistory =
+            await BrowserDataService.instance.searchHistory();
+        for (final q in searchHistory) {
+          if (_suggestMatches(q, text)) add(q);
+        }
+      }
+      final entries = await BrowserDataService.instance.history();
+      for (final e in entries) {
+        if (_suggestMatches(e.title, text) || _suggestMatches(e.url, text)) {
+          add(e.title.isNotEmpty ? e.title : e.url);
+        }
+      }
+    }
+    if (settings.suggestFromBookmarks) {
+      final bookmarks = await BrowserDataService.instance.bookmarks();
+      for (final b in bookmarks) {
+        if (_suggestMatches(b.name, text) || _suggestMatches(b.url, text)) {
+          add(b.name.isNotEmpty ? b.name : b.url);
+        }
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _suggestions
+        ..clear()
+        ..addAll(results.take(8));
+      _suggestionOpen = true;
+      _suggestionLoading = settings.searchSuggestions &&
+          settings.suggestFromSearchEngine &&
+          text.isNotEmpty;
+    });
+    if (settings.searchSuggestions &&
+        settings.suggestFromSearchEngine &&
+        text.isNotEmpty) {
+      final requestId = ++_suggestionRequestId;
+      final online = await _fetchOnlineSuggestions(text);
+      if (!mounted || requestId != _suggestionRequestId) return;
+      setState(() {
+        _suggestionLoading = false;
+        for (final s in online) {
+          if (_suggestions.length >= 12) break;
+          if (!_suggestions.contains(s)) _suggestions.add(s);
+        }
+      });
+    }
+  }
+
+  /// 在线搜索建议：百度 sugrec / 必应 osjson / Google firefox 客户端
+  Future<List<String>> _fetchOnlineSuggestions(String query) async {
+    final engineKey = SettingsService.instance.searchEngine;
+    final encoded = Uri.encodeComponent(query);
+    final url = switch (engineKey) {
+      'bing' => 'https://api.bing.com/osjson.aspx?query=$encoded',
+      'google' => 'https://www.google.com/complete/search?client=firefox&q=$encoded',
+      _ => 'https://www.baidu.com/sugrec?prod=pc&wd=$encoded',
+    };
+    try {
+      final response = await http
+          .get(Uri.parse(url), headers: {
+            'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+          })
+          .timeout(const Duration(seconds: 3));
+      if (response.statusCode != 200) return const [];
+      final body = response.body;
+      if (engineKey == 'bing' || engineKey == 'google') {
+        final decoded = jsonDecode(body);
+        if (decoded is List && decoded.length >= 2 && decoded[1] is List) {
+          return (decoded[1] as List).whereType<String>().toList();
+        }
+        return const [];
+      }
+      // 百度 sugrec：{"g":[{"q":"..."}]} 或 {"s":["..."]}
+      final gMatch =
+          RegExp(r'"g"\s*:\s*\[(.*?)\]', dotAll: true).firstMatch(body);
+      if (gMatch != null) {
+        return RegExp(r'"q"\s*:\s*"((?:[^"\\]|\\.)*)"')
+            .allMatches(gMatch.group(1)!)
+            .map((e) => e.group(1)!)
+            .toList();
+      }
+      final sMatch =
+          RegExp(r'"s"\s*:\s*\[(.*?)\]', dotAll: true).firstMatch(body);
+      if (sMatch != null) {
+        return RegExp(r'"((?:[^"\\]|\\.)*)"')
+            .allMatches(sMatch.group(1)!)
+            .map((e) => e.group(1)!)
+            .toList();
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  void _applySuggestion(String text) {
+    _suggestionHideTimer?.cancel();
+    _hideSuggestions();
+    _urlController.text = text;
+    _urlController.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: text.length,
+    );
+    _submitInput(text);
+  }
+
+  Widget _buildSuggestionPanel() {
+    final theme = Theme.of(context);
+    final count = _suggestions.length + (_suggestionLoading ? 1 : 0);
+    if (count == 0) return const SizedBox.shrink();
+    return Material(
+      elevation: 2,
+      color: theme.colorScheme.surface,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 260),
+        child: ListView.builder(
+          shrinkWrap: true,
+          padding: EdgeInsets.zero,
+          itemCount: count,
+          itemBuilder: (context, index) {
+            if (_suggestionLoading && index == count - 1) {
+              return const Padding(
+                padding: EdgeInsets.all(12),
+                child: Center(
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              );
+            }
+            final text = _suggestions[index];
+            return ListTile(
+              dense: true,
+              leading: Icon(
+                _currentTab.url.isNotEmpty &&
+                        _suggestMatches(_currentTab.url, text)
+                    ? Icons.history
+                    : Icons.search,
+                size: 18,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              title: Text(text, maxLines: 1, overflow: TextOverflow.ellipsis),
+              onTap: () => _applySuggestion(text),
+            );
+          },
+        ),
+      ),
+    );
+  }
   Widget _buildFindBar() {
     final theme = Theme.of(context);
     return Material(
@@ -1445,7 +1905,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
                     );
                   },
                   onSubmitted: _onUrlSubmitted,
-                  onChanged: (_) => setState(() {}),
+                  onChanged: _onUrlChanged,
                   decoration: InputDecoration(
                     hintText: '搜索或输入网址',
                     border: InputBorder.none,

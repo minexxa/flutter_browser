@@ -5,6 +5,7 @@ import '../pages/bookmarks_page.dart';
 import '../pages/downloads_page.dart';
 import '../pages/history_page.dart';
 import '../pages/passwords_page.dart';
+import '../pages/search_settings_page.dart';
 import '../services/browser_data_service.dart';
 import '../services/settings_service.dart';
 import '../utils/url_utils.dart';
@@ -27,6 +28,54 @@ class SettingsPage extends StatelessWidget {
             children: [
               _sectionHeader(context, '通用'),
               _searchEngineTile(context, settings),
+              ListTile(
+                leading: const Icon(Icons.manage_search),
+                title: const Text('搜索设置'),
+                subtitle: const Text('搜索建议、搜索历史、快捷词、搜索框样式'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const SearchSettingsPage(),
+                    ),
+                  );
+                },
+              ),
+              _switchTile(
+                context,
+                icon: Icons.search_outlined,
+                title: '启用搜索工具栏',
+                subtitle: '在网页顶部或底部常驻搜索框',
+                value: settings.searchToolbar,
+                onChanged: settings.setSearchToolbar,
+              ),
+              if (settings.searchToolbar)
+                ListTile(
+                  leading: const Icon(Icons.vertical_align_bottom),
+                  title: const Text('搜索工具栏位置'),
+                  subtitle: Text(
+                    settings.searchToolbarPosition == 'bottom' ? '屏幕底部' : '屏幕顶部',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _showToolbarPositionDialog(context, settings),
+                ),
+              _switchTile(
+                context,
+                icon: Icons.tab_outlined,
+                title: '启用标签栏',
+                subtitle: '在地址栏下方显示标签切换条',
+                value: settings.tabBarEnabled,
+                onChanged: settings.setTabBarEnabled,
+              ),
+              _switchTile(
+                context,
+                icon: Icons.cookie_outlined,
+                title: '允许网站保存和读取 Cookie',
+                subtitle: '关闭后网页无法使用 Cookie',
+                value: settings.cookieAccept,
+                onChanged: settings.setCookieAccept,
+              ),
               _browserIdentityTile(context, settings),
               _fontSizeTile(context, settings),
               _homePageTile(context, settings),
@@ -374,6 +423,41 @@ class SettingsPage extends StatelessWidget {
               child: const Text('保存'),
             ),
           ],
+        );
+      },
+    );
+  }
+
+  void _showToolbarPositionDialog(
+      BuildContext context, SettingsService settings) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('搜索工具栏位置'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _choiceTile(
+                dialogContext,
+                title: '屏幕顶部',
+                selected: settings.searchToolbarPosition != 'bottom',
+                onTap: () {
+                  settings.setSearchToolbarPosition('top');
+                  Navigator.pop(dialogContext);
+                },
+              ),
+              _choiceTile(
+                dialogContext,
+                title: '屏幕底部',
+                selected: settings.searchToolbarPosition == 'bottom',
+                onTap: () {
+                  settings.setSearchToolbarPosition('bottom');
+                  Navigator.pop(dialogContext);
+                },
+              ),
+            ],
+          ),
         );
       },
     );
