@@ -50,11 +50,17 @@ class SettingsService extends ChangeNotifier {
     'customUserAgent': '',
     'fontSizeLevel': 2,
     'homePage': 'default',
+    'startPage': 'restore',
+    'startPageUrl': '',
     'restoreTabs': true,
     'volumeKeyScroll': false,
     'themeMode': 'system',
+    'themeColor': 0xFF1A73E8,
     'forceZoom': false,
     'fullscreen': false,
+    'eyeCare': false,
+    'keepScreenOn': false,
+    'gestureSwitchTab': true,
     'adBlock': true,
     'noImage': false,
     'saveData': false,
@@ -75,11 +81,17 @@ class SettingsService extends ChangeNotifier {
   String get customUserAgent => _values['customUserAgent'] as String;
   int get fontSizeLevel => _values['fontSizeLevel'] as int;
   String get homePage => _values['homePage'] as String;
+  String get startPage => _values['startPage'] as String;
+  String get startPageUrl => _values['startPageUrl'] as String;
   bool get restoreTabs => _values['restoreTabs'] as bool;
   bool get volumeKeyScroll => _values['volumeKeyScroll'] as bool;
   AppThemeMode get themeMode => AppThemeMode.fromString(_values['themeMode'] as String?);
+  int get themeColor => (_values['themeColor'] as num?)?.toInt() ?? 0xFF1A73E8;
   bool get forceZoom => _values['forceZoom'] as bool;
   bool get fullscreen => _values['fullscreen'] as bool;
+  bool get eyeCare => _values['eyeCare'] as bool;
+  bool get keepScreenOn => _values['keepScreenOn'] as bool;
+  bool get gestureSwitchTab => _values['gestureSwitchTab'] as bool;
   bool get adBlock => _values['adBlock'] as bool;
   bool get noImage => _values['noImage'] as bool;
   bool get saveData => _values['saveData'] as bool;
@@ -142,11 +154,17 @@ class SettingsService extends ChangeNotifier {
       _set('fontSizeLevel', level.clamp(0, FontSizeLevel.values.length - 1));
 
   void setHomePage(String value) => _set('homePage', value);
+  void setStartPage(String value) => _set('startPage', value);
+  void setStartPageUrl(String value) => _set('startPageUrl', value);
   void setRestoreTabs(bool value) => _set('restoreTabs', value);
   void setVolumeKeyScroll(bool value) => _set('volumeKeyScroll', value);
   void setThemeMode(AppThemeMode mode) => _set('themeMode', mode.name);
+  void setThemeColor(int color) => _set('themeColor', color);
   void setForceZoom(bool value) => _set('forceZoom', value);
   void setFullscreen(bool value) => _set('fullscreen', value);
+  void setEyeCare(bool value) => _set('eyeCare', value);
+  void setKeepScreenOn(bool value) => _set('keepScreenOn', value);
+  void setGestureSwitchTab(bool value) => _set('gestureSwitchTab', value);
   void setAdBlock(bool value) => _set('adBlock', value);
   void setNoImage(bool value) => _set('noImage', value);
   void setSaveData(bool value) => _set('saveData', value);

@@ -2,10 +2,11 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/bookmark.dart';
 import '../models/history_entry.dart';
 import '../models/quick_link.dart';
 
-/// 本地数据服务：快捷网址、浏览历史、标签页恢复
+/// 本地数据服务：快捷网址、浏览历史、标签页恢复、书签、保存的密码
 class BrowserDataService {
   BrowserDataService._();
 
@@ -14,11 +15,14 @@ class BrowserDataService {
   static const String _quickLinksKey = 'quick_links_v1';
   static const String _historyKey = 'history_v1';
   static const String _tabsKey = 'open_tabs_v1';
+  static const String _bookmarksKey = 'bookmarks_v1';
   static const String _passwordsKey = 'saved_passwords_v1';
+  static const String _neverSaveHostsKey = 'never_save_hosts_v1';
   static const int _historyLimit = 200;
 
   List<QuickLink>? _quickLinks;
   List<HistoryEntry>? _history;
+  List<Bookmark>? _bookmarks;
 
   // ---- 快捷网址 ----
 
@@ -129,6 +133,72 @@ class BrowserDataService {
     );
   }
 
+  // ---- 书签 ----
+
+  Future<List<Bookmark>> bookmarks() async {
+    if (_bookmarks != null) return _bookmarks!;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_bookmarksKey);
+    if (raw == null || raw.isEmpty) {
+      _bookmarks = [];
+    } else {
+      try {
+        final list = jsonDecode(raw) as List<dynamic>;
+        _bookmarks = list
+            .map((e) => Bookmark.fromJson(e as Map<String, dynamic>))
+            .toList();
+      } catch (_) {
+        _bookmarks = [];
+      }
+    }
+    return _bookmarks!;
+  }
+
+  Future<void> _persistBookmarks(List<Bookmark> bookmarks) async {
+    _bookmarks = bookmarks;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _bookmarksKey,
+      jsonEncode(bookmarks.map((e) => e.toJson()).toList()),
+    );
+  }
+
+  /// 添加书签；同网址已存在时返回 false（去重，参考 Via 书签语义）
+  Future<bool> addBookmark(String name, String url) async {
+    final list = await bookmarks();
+    if (list.any((e) => e.url == url)) return false;
+    list.insert(
+      0,
+      Bookmark(
+        id: 'bm_${DateTime.now().millisecondsSinceEpoch}',
+        name: name.isEmpty ? url : name,
+        url: url,
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    await _persistBookmarks(list);
+    return true;
+  }
+
+  Future<void> updateBookmark(Bookmark bookmark) async {
+    final list = await bookmarks();
+    final index = list.indexWhere((e) => e.id == bookmark.id);
+    if (index < 0) return;
+    list[index] = bookmark;
+    await _persistBookmarks(list);
+  }
+
+  Future<void> removeBookmark(String id) async {
+    final list = await bookmarks();
+    list.removeWhere((e) => e.id == id);
+    await _persistBookmarks(list);
+  }
+
+  Future<bool> isBookmarked(String url) async {
+    final list = await bookmarks();
+    return list.any((e) => e.url == url);
+  }
+
   // ---- 标签页恢复 ----
 
   Future<void> saveOpenTabs(List<Map<String, String>> tabs) async {
@@ -184,5 +254,41 @@ class BrowserDataService {
   Future<void> clearPasswords() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_passwordsKey);
+  }
+
+  Future<void> removePassword(String host) async {
+    final passwords = await savedPasswords();
+    passwords.remove(host);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_passwordsKey, jsonEncode(passwords));
+  }
+
+  // ---- 永不保存密码的站点 ----
+
+  Future<Set<String>> neverSaveHosts() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getStringList(_neverSaveHostsKey) ?? const [];
+    return raw.toSet();
+  }
+
+  Future<void> addNeverSaveHost(String host) async {
+    if (host.isEmpty) return;
+    final hosts = await neverSaveHosts();
+    hosts.add(host);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_neverSaveHostsKey, hosts.toList());
+  }
+
+  Future<void> removeNeverSaveHost(String host) async {
+    final hosts = await neverSaveHosts();
+    hosts.remove(host);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_neverSaveHostsKey, hosts.toList());
+  }
+
+  Future<bool> isNeverSaveHost(String host) async {
+    if (host.isEmpty) return false;
+    final hosts = await neverSaveHosts();
+    return hosts.contains(host);
   }
 }
