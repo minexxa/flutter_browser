@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../models/history_entry.dart';
 import '../models/quick_link.dart';
 import '../services/browser_data_service.dart';
+import 'bookmarks_page.dart';
+import 'history_page.dart';
 
 /// Via 风格首页：logo + 搜索框 + 快捷网址 + 最近浏览
 class HomePage extends StatefulWidget {
@@ -139,6 +141,22 @@ class HomePageState extends State<HomePage> {
                 case 'downloads':
                   widget.onOpenDownloads();
                   break;
+                case 'bookmarks':
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const BookmarksPage(),
+                    ),
+                  );
+                  break;
+                case 'history':
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const HistoryPage(),
+                    ),
+                  );
+                  break;
                 case 'clear_history':
                   _confirmClearHistory();
                   break;
@@ -150,6 +168,22 @@ class HomePageState extends State<HomePage> {
                 child: ListTile(
                   leading: Icon(Icons.download_outlined),
                   title: Text('下载管理'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: 'bookmarks',
+                child: ListTile(
+                  leading: Icon(Icons.star_outline),
+                  title: Text('书签'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: 'history',
+                child: ListTile(
+                  leading: Icon(Icons.history),
+                  title: Text('历史记录'),
                   contentPadding: EdgeInsets.zero,
                 ),
               ),

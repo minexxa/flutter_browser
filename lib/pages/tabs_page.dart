@@ -11,6 +11,7 @@ class TabsPage extends StatelessWidget {
     required this.onSelect,
     required this.onClose,
     required this.onNewTab,
+    required this.onNewIncognito,
     required this.onCloseAll,
   });
 
@@ -19,6 +20,7 @@ class TabsPage extends StatelessWidget {
   final ValueChanged<int> onSelect;
   final ValueChanged<int> onClose;
   final VoidCallback onNewTab;
+  final VoidCallback onNewIncognito;
   final VoidCallback onCloseAll;
 
   @override
@@ -31,6 +33,11 @@ class TabsPage extends StatelessWidget {
             icon: const Icon(Icons.add),
             tooltip: '新建标签页',
             onPressed: onNewTab,
+          ),
+          IconButton(
+            icon: const Icon(Icons.visibility_off_outlined),
+            tooltip: '新建无痕标签页',
+            onPressed: onNewIncognito,
           ),
           IconButton(
             icon: const Icon(Icons.delete_outline),
@@ -72,6 +79,12 @@ class TabsPage extends StatelessWidget {
                 label: const Text('关闭所有标签'),
               ),
               const Spacer(),
+              OutlinedButton.icon(
+                onPressed: onNewIncognito,
+                icon: const Icon(Icons.visibility_off_outlined),
+                label: const Text('无痕'),
+              ),
+              const SizedBox(width: 8),
               FilledButton.icon(
                 onPressed: onNewTab,
                 icon: const Icon(Icons.add),
@@ -140,6 +153,14 @@ class _TabCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 8),
+                  if (tab.incognito) ...[
+                    Icon(
+                      Icons.visibility_off_outlined,
+                      size: 14,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                   Expanded(
                     child: Text(
                       tab.isHome ? '首页' : tab.title,

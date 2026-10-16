@@ -2,17 +2,27 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../models/browser_tab.dart';
-import '../models/quick_link.dart';
+import '../pages/bookmarks_page.dart';
 import '../pages/downloads_page.dart';
+import '../pages/history_page.dart';
 import '../pages/home_page.dart';
+import '../pages/reader_page.dart';
 import '../pages/settings_page.dart';
+import '../pages/site_settings_page.dart';
+import '../pages/sniffer_page.dart';
 import '../pages/tabs_page.dart';
+import '../services/ad_rule_service.dart';
 import '../services/browser_data_service.dart';
 import '../services/download_service.dart';
 import '../services/settings_service.dart';
+import '../services/site_settings_service.dart';
+import '../services/sniffer_service.dart';
 import '../utils/js_injections.dart';
 import '../utils/url_utils.dart';
 import '../utils/webview_ext.dart';
@@ -22,12 +32,18 @@ class ShellPage extends StatefulWidget {
   const ShellPage({super.key});
 
   @override
-  State<ShellPage> createState() => _ShellPageState();
+  State<ShellPage> createState() => ShellPageState();
 }
 
-class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
+/// 供书签 / 历史等子页面从任意位置打开网址
+final GlobalKey<ShellPageState> shellPageKey = GlobalKey<ShellPageState>();
+
+class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   static const String _volumeChannelName =
       'com.example.flutter_android_browser/volume';
+  static const String _cookieChannelName =
+      'com.example.flutter_android_browser/cookies';
+  static const MethodChannel _cookieChannel = MethodChannel(_cookieChannelName);
 
   final List<BrowserTab> _tabs = [];
   int _currentIndex = 0;
@@ -39,6 +55,10 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   bool _canGoBack = false;
   bool _canGoForward = false;
   bool _appReady = false;
+  bool _finding = false;
+  String _findCount = '0/0';
+  double? _edgeDragStartX;
+  final TextEditingController _findController = TextEditingController();
 
   BrowserTab get _currentTab => _tabs[_currentIndex];
 
@@ -57,16 +77,20 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     _volumeChannel.setMethodCallHandler(null);
     _urlController.dispose();
     _urlFocusNode.dispose();
+    _findController.dispose();
     super.dispose();
   }
 
   Future<void> _initApp() async {
     await SettingsService.instance.load();
     await DownloadService.instance.init();
+    await AdRuleService.instance.init();
+    await SiteSettingsService.instance.init();
     _setupVolumeChannel();
+    WakelockPlus.toggle(enable: SettingsService.instance.keepScreenOn);
 
     final settings = SettingsService.instance;
-    if (settings.restoreTabs) {
+    if (settings.startPage == 'restore') {
       final saved = await BrowserDataService.instance.loadOpenTabs();
       for (final item in saved) {
         if (!mounted) return;
@@ -75,6 +99,10 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
           await _addTab(url: url, title: item['title'] ?? '新标签页');
         }
       }
+    } else if (settings.startPage == 'custom' &&
+        settings.startPageUrl.isNotEmpty) {
+      if (!mounted) return;
+      await _addTab(url: settings.startPageUrl, title: '新标签页');
     }
     if (_tabs.isEmpty) {
       if (!mounted) return;
@@ -118,6 +146,7 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     final settings = SettingsService.instance;
     _applyFullscreen();
     _setVolumeScrollEnabled(settings.volumeKeyScroll);
+    WakelockPlus.toggle(enable: settings.keepScreenOn);
     for (final tab in _tabs) {
       applyFontSize(tab.controller, settings.fontSize.textZoom);
       applyForceZoom(tab.controller, settings.forceZoom);
@@ -140,14 +169,19 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
 
   // ---- 标签管理 ----
 
-  Future<void> _addTab({String url = '', String title = '新标签页'}) async {
+  Future<void> _addTab({
+    String url = '',
+    String title = '新标签页',
+    bool incognito = false,
+  }) async {
     final id = DateTime.now().millisecondsSinceEpoch.toString();
     final tab = BrowserTab(
       id: id,
       controller: WebViewController(),
       isHome: url.isEmpty,
-      title: title,
+      title: incognito && url.isEmpty ? '无痕标签页' : title,
       url: url,
+      incognito: incognito,
     );
 
     final settings = SettingsService.instance;
@@ -171,11 +205,28 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
       'ClipboardBridge',
       onMessageReceived: _onClipboardBridgeMessage,
     );
+    await tab.controller.addJavaScriptChannel(
+      'ImageBridge',
+      onMessageReceived: _onImageBridgeMessage,
+    );
+    await tab.controller.addJavaScriptChannel(
+      'FindBridge',
+      onMessageReceived: _onFindBridgeMessage,
+    );
+    await tab.controller.addJavaScriptChannel(
+      'ReaderBridge',
+      onMessageReceived: _onReaderBridgeMessage,
+    );
+    await tab.controller.addJavaScriptChannel(
+      'ResourceBridge',
+      onMessageReceived: (message) => _onResourceBridgeMessage(tab, message),
+    );
     await tab.controller.setUserAgent(_effectiveUA(tab));
     applyFontSize(tab.controller, settings.fontSize.textZoom);
     applyForceZoom(tab.controller, settings.forceZoom);
     applyMediaGesture(tab.controller, settings.saveData);
     applyGeolocationEnabled(tab.controller, settings.geolocationAccess);
+    await _applySiteSettings(tab);
 
     _tabs.add(tab);
     _currentIndex = _tabs.length - 1;
@@ -206,6 +257,10 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
             _urlController.text = url;
           }
         });
+        // 站点变化时同步站点设置（JS / Cookie）
+        _applySiteSettings(tab);
+        // 新导航开始，清空上一页嗅探到的资源
+        SnifferService.instance.clearTab(tab.id);
       },
       onPageFinished: (String url) async {
         if (!mounted) return;
@@ -223,17 +278,21 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
             _urlController.text = url;
           }
         });
-        BrowserDataService.instance.addHistory(url, title);
+        if (!tab.incognito) {
+          BrowserDataService.instance.addHistory(url, title);
+        }
         await _injectScripts(tab);
         await _fillSavedPassword(tab);
-        _updateNavState();
-      },
+        _updateNavState();      },
       onWebResourceError: (WebResourceError error) {
         debugPrint('WebView 错误: ${error.description}');
       },
       onNavigationRequest: (NavigationRequest request) {
         if (request.isMainFrame) {
-          if (SettingsService.instance.adBlock && _isAdHost(request.url)) {
+          final tabHost = SiteSettingsService.hostOf(tab.url);
+          final adOn = SiteSettingsService.instance
+              .adBlockEnabled(tabHost, SettingsService.instance.adBlock);
+          if (adOn && _isAdHost(request.url)) {
             return NavigationDecision.prevent;
           }
           if (looksDownloadable(request.url)) {
@@ -250,18 +309,52 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   }
 
   String? _effectiveUA(BrowserTab tab) {
+    final host = SiteSettingsService.hostOf(tab.url);
+    if (host.isNotEmpty) {
+      final override = SiteSettingsService.instance.userAgentOverride(host);
+      if (override != null) return override;
+    }
     if (tab.desktopMode) return BrowserIdentity.byKey('pc').userAgent;
     return SettingsService.instance.effectiveUserAgent;
   }
 
-  bool _isAdHost(String url) {
-    final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
-    if (host.isEmpty) return false;
-    for (final ad in _adHosts) {
-      if (host == ad || host.endsWith('.$ad')) return true;
+  /// 应用站点设置：JS 开关 / Cookie 开关
+  Future<void> _applySiteSettings(BrowserTab tab) async {
+    if (tab.isHome) return;
+    final host = SiteSettingsService.hostOf(tab.url);
+    if (host.isEmpty) return;
+    final site = SiteSettingsService.instance;
+    final android = androidControllerOf(tab.controller);
+    if (android != null) {
+      try {
+        await android.setJavaScriptMode(
+          site.javaScriptEnabled(host)
+              ? JavaScriptMode.unrestricted
+              : JavaScriptMode.disabled,
+        );
+      } catch (_) {}
     }
-    return false;
+    await _setCookieAccept(site.cookiesEnabled(host));
   }
+
+  Future<void> _setCookieAccept(bool accept) async {
+    try {
+      await _cookieChannel.invokeMethod('setAcceptCookie', accept);
+    } catch (_) {}
+  }
+
+  /// 供网站设置页调用：应用最新站点设置并重载当前页
+  Future<void> applySiteSettingsAndReload() async {
+    final tab = _currentTab;
+    if (tab.isHome) return;
+    try {
+      await tab.controller.setUserAgent(_effectiveUA(tab));
+    } catch (_) {}
+    await _applySiteSettings(tab);
+    tab.controller.reload();
+  }
+
+  bool _isAdHost(String url) => AdRuleService.instance.isAdHost(url);
 
   Future<void> _injectScripts(BrowserTab tab) async {
     if (tab.isHome) return;
@@ -277,6 +370,13 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     try {
       await tab.controller.runJavaScript(script);
     } catch (_) {}
+    // 站点级图片阻止
+    final host = SiteSettingsService.hostOf(tab.url);
+    if (host.isNotEmpty && SiteSettingsService.instance.imagesBlocked(host)) {
+      try {
+        await tab.controller.runJavaScript(kSiteNoImageJs);
+      } catch (_) {}
+    }
   }
 
   /// 对已保存凭据的站点自动填充密码
@@ -313,12 +413,73 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
       final username = data['username'] as String? ?? '';
       final password = data['password'] as String? ?? '';
       if (host.isEmpty || username.isEmpty || password.isEmpty) return;
-      BrowserDataService.instance.savePassword(host, username, password);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('密码已保存')),
-      );
+      _handleCapturedPassword(host, username, password);
     } catch (_) {}
+  }
+
+  Future<void> _handleCapturedPassword(
+    String host,
+    String username,
+    String password,
+  ) async {
+    if (await BrowserDataService.instance.isNeverSaveHost(host)) return;
+    // 与已保存的一致时不再打扰
+    final saved = await BrowserDataService.instance.savedPasswords();
+    final existing = saved[host];
+    if (existing != null &&
+        existing['username'] == username &&
+        existing['password'] == password) {
+      return;
+    }
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('保存密码？'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('网站：$host'),
+              const SizedBox(height: 4),
+              Text('用户名：$username'),
+              const SizedBox(height: 4),
+              const Text('密码：••••••••'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                await BrowserDataService.instance.addNeverSaveHost(host);
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('已设置此站不再询问')),
+                );
+              },
+              child: const Text('永不保存'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                await BrowserDataService.instance
+                    .savePassword(host, username, password);
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('密码已保存')),
+                );
+              },
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _onClipboardBridgeMessage(JavaScriptMessage message) {
@@ -329,6 +490,293 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('已复制到剪贴板')),
+    );
+  }
+
+  void _onImageBridgeMessage(JavaScriptMessage message) {
+    final url = message.message;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return;
+    _showSaveImageDialog(url);
+  }
+
+  void _onFindBridgeMessage(JavaScriptMessage message) {
+    if (!mounted) return;
+    setState(() => _findCount = message.message);
+  }
+
+  void _onReaderBridgeMessage(JavaScriptMessage message) {
+    if (!mounted) return;
+    try {
+      final data = jsonDecode(message.message) as Map<String, dynamic>;
+      final title = data['title'] as String? ?? '';
+      final html = data['html'] as String? ?? '';
+      if (html.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('未能提取到正文')),
+        );
+        return;
+      }
+      Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => ReaderPage(title: title, html: html),
+        ),
+      );
+    } catch (_) {}
+  }
+
+  void _onResourceBridgeMessage(BrowserTab tab, JavaScriptMessage message) {
+    try {
+      final decoded = jsonDecode(message.message);
+      if (decoded is! List) return;
+      final urls = decoded
+          .whereType<String>()
+          .where((e) => e.startsWith('http://') || e.startsWith('https://'))
+          .toList();
+      if (urls.isEmpty) return;
+      SnifferService.instance.addAll(tab.id, urls);
+    } catch (_) {}
+  }
+
+  // ---- 页内查找 ----
+
+  void _startFind() {
+    if (_currentTab.isHome) return;
+    setState(() => _finding = true);
+    _runFindJs(kFindInPageJs);
+  }
+
+  void _onFindChanged(String query) {
+    if (query.isEmpty) {
+      setState(() => _findCount = '0/0');
+      _runFindJs('window.__viaFindClear && window.__viaFindClear();');
+      return;
+    }
+    _runFindJs('window.__viaFind && window.__viaFind(${jsonEncode(query)});');
+  }
+
+  void _findNext() =>
+      _runFindJs('window.__viaFindNext && window.__viaFindNext();');
+
+  void _findPrev() =>
+      _runFindJs('window.__viaFindPrev && window.__viaFindPrev();');
+
+  void _runFindJs(String js) {
+    if (_tabs.isEmpty || _currentTab.isHome) return;
+    try {
+      _currentTab.controller.runJavaScript(js);
+    } catch (_) {}
+  }
+
+  void _stopFind() {
+    _runFindJs('window.__viaFindClear && window.__viaFindClear();');
+    if (!mounted) return;
+    setState(() {
+      _finding = false;
+      _findCount = '0/0';
+    });
+    _findController.clear();
+  }
+
+  // ---- 网页工具 ----
+
+  Future<void> _viewSource() async {
+    final tab = _currentTab;
+    if (tab.isHome) return;
+    String source = '';
+    try {
+      final result = await tab.controller.runJavaScriptReturningResult(
+        'document.documentElement.outerHTML',
+      );
+      source = result.toString();
+    } catch (_) {}
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('网页源码'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                source.isEmpty ? '无法获取源码' : source,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showQrCode() {
+    final url = _currentTab.url;
+    if (url.isEmpty) return;
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('网页二维码'),
+          content: SizedBox(
+            width: 240,
+            height: 240,
+            child: Center(
+              child: QrImageView(
+                data: url,
+                size: 240,
+                backgroundColor: Colors.white,
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _translatePage() {
+    final tab = _currentTab;
+    if (tab.isHome || tab.url.isEmpty) return;
+    final target =
+        'https://fanyi.baidu.com/transpage?query=${Uri.encodeComponent(tab.url)}&from=auto&to=zh&source=url';
+    tab.isHome = false;
+    tab.controller.loadRequest(Uri.parse(target));
+    setState(() {});
+  }
+
+  void _openReaderMode() {
+    final tab = _currentTab;
+    if (tab.isHome) return;
+    try {
+      tab.controller.runJavaScript(kReaderExtractJs);
+    } catch (_) {}
+  }
+
+  void _openSniffer() {
+    final tab = _currentTab;
+    if (tab.isHome) return;
+    // 打开面板时主动触发一次即时嗅探
+    try {
+      tab.controller
+          .runJavaScript('window.__viaSniff && window.__viaSniff();');
+    } catch (_) {}
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => SnifferPage(
+          tabId: tab.id,
+          onOpenInNewTab: (url) {
+            _addTab(url: url);
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _sharePage() async {
+    final url = _currentTab.url;
+    if (url.isEmpty) return;
+    try {
+      await Share.shareUri(Uri.parse(url));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('分享失败')),
+      );
+    }
+  }
+
+  Future<void> _addBookmark() async {
+    final tab = _currentTab;
+    if (tab.isHome || tab.url.isEmpty) return;
+    final added =
+        await BrowserDataService.instance.addBookmark(tab.title, tab.url);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(added ? '已添加书签' : '书签已存在')),
+    );
+  }
+
+  void _showSaveImageDialog(String url) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('保存图片'),
+          content: Text(
+            url,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(dialogContext).textTheme.bodySmall,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                await DownloadService.instance.startDownload(
+                  url,
+                  fileName: _fileNameFromUrl(url),
+                );
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('图片已开始下载')),
+                );
+              },
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  String _fileNameFromUrl(String url) {
+    final segments = Uri.tryParse(url)?.pathSegments ?? const [];
+    final last = segments.isNotEmpty ? segments.last : '';
+    if (last.contains('.')) return last;
+    return 'image_${DateTime.now().millisecondsSinceEpoch}.jpg';
+  }
+
+  // ---- 子页面导航 ----
+
+  void _openBookmarks() {
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(builder: (_) => const BookmarksPage()),
+    );
+  }
+
+  void _openSiteSettings() {
+    final host = SiteSettingsService.hostOf(_currentTab.url);
+    if (host.isEmpty) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => SiteSettingsPage(host: host),
+      ),
+    );
+  }
+
+  void _openHistory() {
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(builder: (_) => const HistoryPage()),
     );
   }
 
@@ -344,7 +792,8 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
       setState(() {});
       return;
     }
-    _tabs.removeAt(index);
+    final removed = _tabs.removeAt(index);
+    SnifferService.instance.clearTab(removed.id);
     if (_currentIndex >= _tabs.length) {
       _currentIndex = _tabs.length - 1;
     } else if (_currentIndex > index) {
@@ -362,6 +811,16 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
         _urlController.text = _currentTab.url;
       }
     });
+    // 查找条保持打开时，在新标签上重新执行当前关键字
+    if (_finding && !_currentTab.isHome) {
+      final query = _findController.text;
+      if (query.isEmpty) {
+        _runFindJs('window.__viaFindClear && window.__viaFindClear();');
+      } else {
+        _runFindJs(
+            'window.__viaFind && window.__viaFind(${jsonEncode(query)});');
+      }
+    }
     _updateNavState();
   }
 
@@ -408,6 +867,12 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   }
 
   void _onUrlSubmitted(String input) => _openUrl(input);
+
+  /// 供书签 / 历史等子页面调用：关闭子页面并在当前标签打开网址
+  void openUrlFromAnywhere(String url) {
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    _openUrl(url);
+  }
 
   // ---- 下载 ----
 
@@ -491,11 +956,16 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
             Navigator.pop(context);
             await _addTab();
           },
+          onNewIncognito: () async {
+            Navigator.pop(context);
+            await _addTab(incognito: true);
+          },
           onCloseAll: () {
             Navigator.pop(context);
             setState(() {
               _tabs.clear();
             });
+            SnifferService.instance.clearAll();
             _addTab();
           },
         ),
@@ -507,6 +977,7 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
 
   void _showMainMenu() {
     final settings = SettingsService.instance;
+    final notHome = !_currentTab.isHome && _currentTab.url.isNotEmpty;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -529,85 +1000,204 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
                   ),
                 ),
                 const SizedBox(height: 12),
-                GridView.count(
-                  crossAxisCount: 4,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  padding: EdgeInsets.zero,
-                  children: [
-                    _menuItem(sheetContext, Icons.add, '新建标签页', () {
-                      Navigator.pop(sheetContext);
-                      _addTab();
-                    }),
-                    _menuItem(sheetContext, Icons.star_outline, '添加收藏', () {
-                      Navigator.pop(sheetContext);
-                      _addCurrentToHome();
-                    }),
-                    _menuItem(sheetContext, Icons.share_outlined, '分享', () {
-                      Navigator.pop(sheetContext);
-                      _sharePage();
-                    }),
-                    _menuItem(sheetContext, Icons.copy_outlined, '复制网址', () {
-                      Navigator.pop(sheetContext);
-                      _copyUrl();
-                    }),
-                    _menuItem(
-                      sheetContext,
-                      Icons.arrow_forward,
-                      '前进',
-                      () {
-                        Navigator.pop(sheetContext);
-                        _currentTab.controller.goForward();
-                      },
-                      enabled: _canGoForward,
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: GridView.count(
+                      crossAxisCount: 4,
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      padding: EdgeInsets.zero,
+                      children: [
+                        _menuItem(sheetContext, Icons.add, '新建标签页', () {
+                          Navigator.pop(sheetContext);
+                          _addTab();
+                        }),
+                        _menuItem(
+                          sheetContext,
+                          Icons.visibility_off_outlined,
+                          '新建无痕标签页',
+                          () {
+                            Navigator.pop(sheetContext);
+                            _addTab(incognito: true);
+                          },
+                        ),
+                        _menuItem(
+                            sheetContext, Icons.star_outline, '书签', () {
+                          Navigator.pop(sheetContext);
+                          _openBookmarks();
+                        }),
+                        _menuItem(
+                            sheetContext, Icons.history, '历史记录', () {
+                          Navigator.pop(sheetContext);
+                          _openHistory();
+                        }),
+                        _menuItem(sheetContext, Icons.bookmark_add_outlined,
+                            '添加收藏', () {
+                          Navigator.pop(sheetContext);
+                          _addBookmark();
+                        }, enabled: notHome),
+                        _menuItem(sheetContext, Icons.share_outlined, '分享',
+                            () {
+                          Navigator.pop(sheetContext);
+                          _sharePage();
+                        }, enabled: notHome),
+                        _menuItem(sheetContext, Icons.copy_outlined, '复制网址',
+                            () {
+                          Navigator.pop(sheetContext);
+                          _copyUrl();
+                        }, enabled: notHome),
+                        _menuItem(
+                          sheetContext,
+                          Icons.arrow_forward,
+                          '前进',
+                          () {
+                            Navigator.pop(sheetContext);
+                            _currentTab.controller.goForward();
+                          },
+                          enabled: _canGoForward,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.desktop_windows_outlined,
+                          '桌面版网站',
+                          () async {
+                            Navigator.pop(sheetContext);
+                            await _toggleDesktopMode();
+                          },
+                          enabled: notHome,
+                          highlighted: _currentTab.desktopMode,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.tune,
+                          '网站设置',
+                          () {
+                            Navigator.pop(sheetContext);
+                            _openSiteSettings();
+                          },
+                          enabled: notHome,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.search,
+                          '页内查找',
+                          () {
+                            Navigator.pop(sheetContext);
+                            _startFind();
+                          },
+                          enabled: notHome,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.code,
+                          '网页源码',
+                          () {
+                            Navigator.pop(sheetContext);
+                            _viewSource();
+                          },
+                          enabled: notHome,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.qr_code_2,
+                          '生成二维码',
+                          () {
+                            Navigator.pop(sheetContext);
+                            _showQrCode();
+                          },
+                          enabled: notHome,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.translate,
+                          '翻译网页',
+                          () {
+                            Navigator.pop(sheetContext);
+                            _translatePage();
+                          },
+                          enabled: notHome,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.chrome_reader_mode_outlined,
+                          '阅读模式',
+                          () {
+                            Navigator.pop(sheetContext);
+                            _openReaderMode();
+                          },
+                          enabled: notHome,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.travel_explore,
+                          '资源嗅探',
+                          () {
+                            Navigator.pop(sheetContext);
+                            _openSniffer();
+                          },
+                          enabled: notHome,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.lightbulb_outline,
+                          '屏幕常亮',
+                          () {
+                            Navigator.pop(sheetContext);
+                            settings.setKeepScreenOn(!settings.keepScreenOn);
+                          },
+                          highlighted: settings.keepScreenOn,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.bedtime_outlined,
+                          '护眼模式',
+                          () {
+                            Navigator.pop(sheetContext);
+                            settings.setEyeCare(!settings.eyeCare);
+                          },
+                          highlighted: settings.eyeCare,
+                        ),
+                        _menuItem(sheetContext, Icons.download_outlined,
+                            '下载管理', () {
+                          Navigator.pop(sheetContext);
+                          _openDownloads();
+                        }),
+                        _menuItem(
+                          sheetContext,
+                          Icons.image_outlined,
+                          '无图模式',
+                          () {
+                            Navigator.pop(sheetContext);
+                            settings.setNoImage(!settings.noImage);
+                          },
+                          highlighted: settings.noImage,
+                        ),
+                        _menuItem(
+                          sheetContext,
+                          Icons.block_outlined,
+                          '广告拦截',
+                          () {
+                            Navigator.pop(sheetContext);
+                            settings.setAdBlock(!settings.adBlock);
+                          },
+                          highlighted: settings.adBlock,
+                        ),
+                        _menuItem(
+                            sheetContext, Icons.settings_outlined, '设置', () {
+                          Navigator.pop(sheetContext);
+                          _openSettings();
+                        }),
+                        _menuItem(sheetContext, Icons.refresh, '刷新', () {
+                          Navigator.pop(sheetContext);
+                          _currentTab.controller.reload();
+                        }),
+                        _menuItem(sheetContext, Icons.exit_to_app, '退出', () {
+                          Navigator.pop(sheetContext);
+                          SystemNavigator.pop();
+                        }),
+                      ],
                     ),
-                    _menuItem(
-                      sheetContext,
-                      Icons.desktop_windows_outlined,
-                      '桌面版网站',
-                      () async {
-                        Navigator.pop(sheetContext);
-                        await _toggleDesktopMode();
-                      },
-                      highlighted: _currentTab.desktopMode,
-                    ),
-                    _menuItem(sheetContext, Icons.download_outlined, '下载管理', () {
-                      Navigator.pop(sheetContext);
-                      _openDownloads();
-                    }),
-                    _menuItem(
-                      sheetContext,
-                      Icons.image_outlined,
-                      '无图模式',
-                      () {
-                        Navigator.pop(sheetContext);
-                        settings.setNoImage(!settings.noImage);
-                      },
-                      highlighted: settings.noImage,
-                    ),
-                    _menuItem(
-                      sheetContext,
-                      Icons.block_outlined,
-                      '广告拦截',
-                      () {
-                        Navigator.pop(sheetContext);
-                        settings.setAdBlock(!settings.adBlock);
-                      },
-                      highlighted: settings.adBlock,
-                    ),
-                    _menuItem(sheetContext, Icons.settings_outlined, '设置', () {
-                      Navigator.pop(sheetContext);
-                      _openSettings();
-                    }),
-                    _menuItem(sheetContext, Icons.refresh, '刷新', () {
-                      Navigator.pop(sheetContext);
-                      _currentTab.controller.reload();
-                    }),
-                    _menuItem(sheetContext, Icons.exit_to_app, '退出', () {
-                      Navigator.pop(sheetContext);
-                      SystemNavigator.pop();
-                    }),
-                  ],
+                  ),
                 ),
               ],
             ),
@@ -651,30 +1241,6 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _addCurrentToHome() async {
-    final tab = _currentTab;
-    if (tab.isHome || tab.url.isEmpty) return;
-    await BrowserDataService.instance.addQuickLink(
-      QuickLink(
-        id: 'ql_${DateTime.now().millisecondsSinceEpoch}',
-        name: tab.title,
-        url: tab.url,
-      ),
-    );
-    if (!mounted) return;
-    _homeKey.currentState?.reload();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('已添加到主页收藏')),
-    );
-  }
-
-  void _sharePage() {
-    Clipboard.setData(ClipboardData(text: _currentTab.url));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('已复制链接到剪贴板')),
-    );
-  }
-
   void _copyUrl() {
     Clipboard.setData(ClipboardData(text: _currentTab.url));
     ScaffoldMessenger.of(context).showSnackBar(
@@ -710,7 +1276,7 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
       return;
     }
     final tabs = _tabs
-        .where((t) => !t.isHome && t.url.isNotEmpty)
+        .where((t) => !t.isHome && !t.incognito && t.url.isNotEmpty)
         .map((t) => {'url': t.url, 'title': t.title})
         .toList();
     service.saveOpenTabs(tabs);
@@ -753,6 +1319,8 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
           child: Column(
             children: [
               if (_appReady && !_currentTab.isHome) _buildTopBar(),
+              if (_appReady && !_currentTab.isHome && _finding)
+                _buildFindBar(),
               if (_appReady && !_currentTab.isHome)
                 _currentTab.isLoading
                     ? LinearProgressIndicator(
@@ -785,6 +1353,65 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
 
   void _reloadHome() {
     _homeKey.currentState?.reload();
+  }
+
+  Widget _buildFindBar() {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+        child: Row(
+          children: [
+            Expanded(
+              child: SizedBox(
+                height: 40,
+                child: TextField(
+                  controller: _findController,
+                  autofocus: true,
+                  style: theme.textTheme.bodyMedium,
+                  decoration: InputDecoration(
+                    hintText: '页内查找',
+                    isDense: true,
+                    filled: true,
+                    fillColor: theme.colorScheme.surface,
+                    prefixIcon: const Icon(Icons.search, size: 18),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                  ),
+                  onChanged: _onFindChanged,
+                ),
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(_findCount, style: theme.textTheme.bodySmall),
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_up),
+              tooltip: '上一个',
+              visualDensity: VisualDensity.compact,
+              onPressed: _findPrev,
+            ),
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_down),
+              tooltip: '下一个',
+              visualDensity: VisualDensity.compact,
+              onPressed: _findNext,
+            ),
+            IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: '关闭查找',
+              visualDensity: VisualDensity.compact,
+              onPressed: _stopFind,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildTopBar() {
@@ -918,12 +1545,39 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   }
 
   Widget _buildWebViewStack() {
-    return IndexedStack(
+    final stack = IndexedStack(
       index: _currentIndex,
       children: _tabs.map((tab) {
         return WebViewWidget(controller: tab.controller);
       }).toList(),
     );
+    if (!SettingsService.instance.gestureSwitchTab) return stack;
+    final width = MediaQuery.sizeOf(context).width;
+    return GestureDetector(
+      onHorizontalDragStart: (details) {
+        _edgeDragStartX = details.localPosition.dx;
+      },
+      onHorizontalDragEnd: (details) {
+        final startX = _edgeDragStartX;
+        _edgeDragStartX = null;
+        if (startX == null) return;
+        final velocity = details.primaryVelocity ?? 0;
+        const edge = 32;
+        const threshold = 300; // px/s
+        if (startX < edge && velocity > threshold) {
+          _switchTabByGesture(-1);
+        } else if (startX > width - edge && velocity < -threshold) {
+          _switchTabByGesture(1);
+        }
+      },
+      child: stack,
+    );
+  }
+
+  void _switchTabByGesture(int delta) {
+    final next = _currentIndex + delta;
+    if (next < 0 || next >= _tabs.length) return;
+    _switchTab(next);
   }
 
   Widget _buildBottomToolbar() {
@@ -1010,34 +1664,3 @@ class _ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     );
   }
 }
-
-/// 内建广告域名黑名单（主框架导航级别拦截）
-const List<String> _adHosts = [
-  'doubleclick.net',
-  'googlesyndication.com',
-  'googleadservices.com',
-  'adservice.google.com',
-  'admob.com',
-  'adsmogo.com',
-  'admarvel.com',
-  'inmobi.com',
-  'applovin.com',
-  'unityads.unity3d.com',
-  'vungle.com',
-  'chartboost.com',
-  'tapjoy.com',
-  'mopub.com',
-  'adcolony.com',
-  'pos.baidu.com',
-  'cbjs.baidu.com',
-  'cpro.baidu.com',
-  'union.baidu.com',
-  'entry.baidu.com',
-  'poscdn.baidu.com',
-  'soflop.cn',
-  '51yes.com',
-  'admaster.com.cn',
-  'allyes.com',
-  'adchina.com',
-  'adsky.cn',
-];

@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../pages/ad_subscriptions_page.dart';
+import '../pages/bookmarks_page.dart';
 import '../pages/downloads_page.dart';
+import '../pages/history_page.dart';
+import '../pages/passwords_page.dart';
 import '../services/browser_data_service.dart';
 import '../services/settings_service.dart';
 import '../utils/url_utils.dart';
@@ -26,6 +30,34 @@ class SettingsPage extends StatelessWidget {
               _browserIdentityTile(context, settings),
               _fontSizeTile(context, settings),
               _homePageTile(context, settings),
+              ListTile(
+                leading: const Icon(Icons.star_outline),
+                title: const Text('书签'),
+                subtitle: const Text('管理收藏的网页'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const BookmarksPage(),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.history),
+                title: const Text('历史记录'),
+                subtitle: const Text('搜索和管理浏览历史'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const HistoryPage(),
+                    ),
+                  );
+                },
+              ),
               _switchTile(
                 context,
                 icon: Icons.restore,
@@ -42,10 +74,26 @@ class SettingsPage extends StatelessWidget {
                 value: settings.volumeKeyScroll,
                 onChanged: settings.setVolumeKeyScroll,
               ),
+              _switchTile(
+                context,
+                icon: Icons.pan_tool_outlined,
+                title: '手势操作',
+                subtitle: '屏幕左右边缘滑动切换标签页',
+                value: settings.gestureSwitchTab,
+                onChanged: settings.setGestureSwitchTab,
+              ),
+              ListTile(
+                leading: const Icon(Icons.login_outlined),
+                title: const Text('启动时'),
+                subtitle: Text(_startPageLabel(settings)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _showStartPageDialog(context, settings),
+              ),
               const Divider(),
 
               _sectionHeader(context, '外观'),
               _themeModeTile(context, settings),
+              _themeColorTile(context, settings),
               _switchTile(
                 context,
                 icon: Icons.zoom_out_map,
@@ -62,6 +110,22 @@ class SettingsPage extends StatelessWidget {
                 value: settings.fullscreen,
                 onChanged: settings.setFullscreen,
               ),
+              _switchTile(
+                context,
+                icon: Icons.bedtime_outlined,
+                title: '护眼模式',
+                subtitle: '为页面叠加暖色滤镜，缓解视觉疲劳',
+                value: settings.eyeCare,
+                onChanged: settings.setEyeCare,
+              ),
+              _switchTile(
+                context,
+                icon: Icons.lightbulb_outline,
+                title: '屏幕常亮',
+                subtitle: '浏览网页时保持屏幕点亮',
+                value: settings.keepScreenOn,
+                onChanged: settings.setKeepScreenOn,
+              ),
               const Divider(),
 
               _sectionHeader(context, '网络'),
@@ -72,6 +136,20 @@ class SettingsPage extends StatelessWidget {
                 subtitle: '内建规则仅拦截常见广告',
                 value: settings.adBlock,
                 onChanged: settings.setAdBlock,
+              ),
+              ListTile(
+                leading: const Icon(Icons.rule_folder_outlined),
+                title: const Text('广告拦截规则订阅'),
+                subtitle: const Text('管理 hosts / AdGuard 规则订阅'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const AdSubscriptionsPage(),
+                    ),
+                  );
+                },
               ),
               _switchTile(
                 context,
@@ -99,6 +177,20 @@ class SettingsPage extends StatelessWidget {
                 subtitle: '保存网站登录使用的用户名和密码',
                 value: settings.savePassword,
                 onChanged: settings.setSavePassword,
+              ),
+              ListTile(
+                leading: const Icon(Icons.key_outlined),
+                title: const Text('密码管理'),
+                subtitle: const Text('查看和管理已保存的密码'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const PasswordsPage(),
+                    ),
+                  );
+                },
               ),
               _switchTile(
                 context,
@@ -523,6 +615,178 @@ class SettingsPage extends StatelessWidget {
               ),
             ],
           ),
+        );
+      },
+    );
+  }
+
+  static const List<int> _themeColors = [
+    0xFF1A73E8,
+    0xFF00A578,
+    0xFF7B1FA2,
+    0xFFE6162D,
+    0xFFFF5000,
+    0xFF00695C,
+    0xFFFB7299,
+    0xFF3F51B5,
+  ];
+
+  Widget _themeColorTile(BuildContext context, SettingsService settings) {
+    return ListTile(
+      leading: const Icon(Icons.color_lens_outlined),
+      title: const Text('主题色'),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 20,
+            height: 20,
+            decoration: BoxDecoration(
+              color: Color(settings.themeColor),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const Icon(Icons.chevron_right),
+        ],
+      ),
+      onTap: () => _showThemeColorDialog(context, settings),
+    );
+  }
+
+  void _showThemeColorDialog(BuildContext context, SettingsService settings) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('主题色'),
+          content: Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: _themeColors.map((color) {
+              final selected = color == settings.themeColor;
+              return GestureDetector(
+                onTap: () {
+                  settings.setThemeColor(color);
+                  Navigator.pop(dialogContext);
+                },
+                child: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Color(color),
+                    shape: BoxShape.circle,
+                    border: selected
+                        ? Border.all(
+                            color: Theme.of(dialogContext)
+                                .colorScheme
+                                .onSurface,
+                            width: 2.5,
+                          )
+                        : null,
+                  ),
+                  child: selected
+                      ? const Icon(Icons.check, color: Colors.white)
+                      : null,
+                ),
+              );
+            }).toList(),
+          ),
+        );
+      },
+    );
+  }
+
+  String _startPageLabel(SettingsService settings) {
+    return switch (settings.startPage) {
+      'restore' => '恢复上次的标签页',
+      'custom' => settings.startPageUrl.isEmpty
+          ? '打开自定义网址'
+          : settings.startPageUrl,
+      _ => '打开主页',
+    };
+  }
+
+  void _showStartPageDialog(BuildContext context, SettingsService settings) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('启动时'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _choiceTile(
+                  dialogContext,
+                  title: '打开主页',
+                  selected: settings.startPage == 'home',
+                  onTap: () {
+                    settings.setStartPage('home');
+                    Navigator.pop(dialogContext);
+                  },
+                ),
+                _choiceTile(
+                  dialogContext,
+                  title: '恢复上次的标签页',
+                  selected: settings.startPage == 'restore',
+                  onTap: () {
+                    settings.setStartPage('restore');
+                    Navigator.pop(dialogContext);
+                  },
+                ),
+                _choiceTile(
+                  dialogContext,
+                  title: '打开自定义网址',
+                  selected: settings.startPage == 'custom',
+                  onTap: () {
+                    settings.setStartPage('custom');
+                    Navigator.pop(dialogContext);
+                    _showStartPageUrlDialog(context, settings);
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showStartPageUrlDialog(
+      BuildContext context, SettingsService settings) {
+    final controller = TextEditingController(text: settings.startPageUrl);
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('自定义启动网址'),
+          content: TextField(
+            controller: controller,
+            keyboardType: TextInputType.url,
+            decoration: const InputDecoration(
+              labelText: '启动网址',
+              hintText: '例如：m.baidu.com',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                var url = controller.text.trim();
+                if (url.isEmpty) return;
+                if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                  url = 'https://$url';
+                }
+                settings.setStartPage('custom');
+                settings.setStartPageUrl(url);
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('保存'),
+            ),
+          ],
         );
       },
     );
