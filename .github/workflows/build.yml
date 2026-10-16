@@ -42,9 +42,8 @@ jobs:
       - name: Build release APK
         run: flutter build apk --release --target-platform android-arm64
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: release-apk
-          path: build/app/outputs/flutter-apk/*.apk
-          retention-days: 14
+          tag_name: ci
+          files: build/app/outputs/flutter-apk/*.apk
