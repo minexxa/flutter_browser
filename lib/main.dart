@@ -19,20 +19,19 @@ void main() {
 class BrowserApp extends StatelessWidget {
   const BrowserApp({super.key});
 
-  static const Color _seedColor = Color(0xFF1A73E8);
-
   @override
   Widget build(BuildContext context) {
     final settings = SettingsService.instance;
     return AnimatedBuilder(
       animation: settings,
       builder: (context, _) {
-        return MaterialApp(
+        final seedColor = Color(settings.themeColor);
+        final app = MaterialApp(
           title: 'Flutter 浏览器',
           debugShowCheckedModeBanner: false,
           theme: ThemeData(
             colorScheme: ColorScheme.fromSeed(
-              seedColor: _seedColor,
+              seedColor: seedColor,
               brightness: Brightness.light,
             ),
             useMaterial3: true,
@@ -44,7 +43,7 @@ class BrowserApp extends StatelessWidget {
           ),
           darkTheme: ThemeData(
             colorScheme: ColorScheme.fromSeed(
-              seedColor: _seedColor,
+              seedColor: seedColor,
               brightness: Brightness.dark,
             ),
             useMaterial3: true,
@@ -59,7 +58,19 @@ class BrowserApp extends StatelessWidget {
             AppThemeMode.light => ThemeMode.light,
             AppThemeMode.dark => ThemeMode.dark,
           },
-          home: const ShellPage(),
+          home: ShellPage(key: shellPageKey),
+        );
+        if (!settings.eyeCare) return app;
+        // 护眼模式：全局叠加暖色滤镜
+        return Stack(
+          children: [
+            app,
+            const Positioned.fill(
+              child: IgnorePointer(
+                child: ColoredBox(color: Color(0x1FFF9800)),
+              ),
+            ),
+          ],
         );
       },
     );
