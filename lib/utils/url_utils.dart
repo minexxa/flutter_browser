@@ -59,8 +59,29 @@ class BrowserIdentity {
       builtin.firstWhere((e) => e.key == key, orElse: () => android);
 }
 
-/// 将用户输入规范化为可加载的 URL；无法识别为网址时按搜索引擎处理
-String normalizeInput(String input, {required SearchEngine engine}) {
+/// 输入是否为纯搜索词（既不是完整 URL 也不形似域名）
+bool isPlainSearchQuery(String input) {
+  final text = input.trim();
+  if (text.isEmpty) return false;
+  final lower = text.toLowerCase();
+  if (lower.startsWith('http://') || lower.startsWith('https://') ||
+      lower.startsWith('file://') || lower.startsWith('about:') ||
+      lower.startsWith('javascript:')) {
+    return false;
+  }
+  final looksLikeHost = RegExp(r'^[^\s/]+\.[^\s/]{2,}(/.*)?$').hasMatch(text) &&
+      !text.contains(' ');
+  return !looksLikeHost;
+}
+
+/// 将用户输入规范化为可加载的 URL；无法识别为网址时按搜索引擎处理。
+/// [quickWords] 为 engineKey -> 快捷词；[customSearchUrl] 为自定义引擎地址。
+String normalizeInput(
+  String input, {
+  required SearchEngine engine,
+  Map<String, String> quickWords = const {},
+  String customSearchUrl = '',
+}) {
   final text = input.trim();
   if (text.isEmpty) return '';
 
@@ -74,6 +95,34 @@ String normalizeInput(String input, {required SearchEngine engine}) {
   // about:blank 等特殊页面
   if (lower.startsWith('about:') || lower.startsWith('javascript:')) {
     return text;
+  }
+
+  // 快捷词："word 搜索内容" 使用对应引擎
+  if (quickWords.isNotEmpty) {
+    final spaceIndex = text.indexOf(' ');
+    if (spaceIndex > 0) {
+      final word = text.substring(0, spaceIndex);
+      final rest = text.substring(spaceIndex + 1).trim();
+      if (rest.isNotEmpty) {
+        String? ownerKey;
+        for (final entry in quickWords.entries) {
+          if (entry.value == word) {
+            ownerKey = entry.key;
+            break;
+          }
+        }
+        if (ownerKey != null) {
+          if (ownerKey == 'custom') {
+            if (customSearchUrl.isNotEmpty) {
+              return SearchEngine('custom', '自定义', customSearchUrl)
+                  .buildUrl(rest);
+            }
+          } else {
+            return SearchEngine.byKey(ownerKey).buildUrl(rest);
+          }
+        }
+      }
+    }
   }
 
   // 形似域名（含点且无空格）→ 补 https://
