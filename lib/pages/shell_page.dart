@@ -47,6 +47,8 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
       'com.example.flutter_android_browser/volume';
   static const String _cookieChannelName =
       'com.example.flutter_android_browser/cookies';
+  /// 地址栏建议面板 Key（供测试定位）
+  static const Key suggestionPanelKey = Key('suggestion_panel');
   static const MethodChannel _cookieChannel = MethodChannel(_cookieChannelName);
 
   final List<BrowserTab> _tabs = [];
@@ -240,6 +242,13 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
       await tab.controller.setBackgroundColor(backgroundColor);
       await tab.controller.setNavigationDelegate(_buildNavigationDelegate(tab));
 
+      // 用户滑动网页即收起地址栏：平台视图（WebView）的触摸不透传 Flutter 焦点系统，
+      // 若不监听滚动主动收起，聚焦地址栏后建议面板+软键盘会常驻压缩 WebView 可视区
+      final android = androidControllerOf(tab.controller);
+      if (android != null) {
+        await android.setOnScrollPositionChange((_) => _collapseUrlBar());
+      }
+
       await tab.controller.addJavaScriptChannel(
         'DownloadBridge',
         onMessageReceived: _onDownloadBridgeMessage,
@@ -302,6 +311,9 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
       },
       onPageStarted: (String url) {
         if (!mounted) return;
+        // 页面开始导航即收起地址栏编辑态：聚焦地址栏后点网页内链接，
+        // 平台视图触摸不会失焦，需主动收起（否则面板+键盘常驻压缩 WebView）
+        _collapseUrlBar();
         setState(() {
           tab.url = url;
           tab.isLoading = true;
@@ -317,6 +329,9 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
       },
       onPageFinished: (String url) async {
         if (!mounted) return;
+        // 兜底：部分导航（如 JS 重定向/历史跳转）只触发 finished，
+        // 同样收起地址栏编辑态，避免面板+键盘常驻压缩 WebView
+        _collapseUrlBar();
         String title = tab.title;
         try {
           final loaded = await tab.controller.getTitle();
@@ -1400,6 +1415,12 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   // ---- 系统返回键 ----
 
   Future<bool> _onWillPop() async {
+    // 地址栏处于编辑态（建议面板/软键盘）时返回键优先收起而非导航，
+    // 与主流浏览器一致；平台视图触摸不透传焦点，用户需要这条确定退出路径
+    if (_urlFocusNode.hasFocus || _suggestionOpen) {
+      _collapseUrlBar();
+      return false;
+    }
     final tab = _currentTab;
     if (!tab.isHome) {
       if (_canGoBack) {
@@ -1613,6 +1634,19 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     });
   }
 
+  /// 收起地址栏瞬时状态：清除焦点（收起软键盘）并立即关闭建议面板。
+  ///
+  /// 背景：Android 平台视图（WebView）自行消费触摸，不会透传给 Flutter 焦点系统，
+  /// 用户与网页交互（滑动 / 点链接 / 点工具栏）时地址栏仍停留在编辑态，
+  /// 建议面板与软键盘常驻会持续压缩 WebView 可视区（表现为"页面滑不了"）。
+  /// 凡可感知到的"用户回到网页"信号（滚动、导航开始、工具栏、返回键）都应主动收起。
+  void _collapseUrlBar() {
+    if (!mounted) return;
+    _suggestionHideTimer?.cancel();
+    if (_urlFocusNode.hasFocus) _urlFocusNode.unfocus();
+    _hideSuggestions();
+  }
+
   static bool _suggestMatches(String candidate, String query) {
     if (query.isEmpty) return true;
     return candidate.toLowerCase().contains(query.toLowerCase());
@@ -1740,6 +1774,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     final count = _suggestions.length + (_suggestionLoading ? 1 : 0);
     if (count == 0) return const SizedBox.shrink();
     return Material(
+      key: suggestionPanelKey,
       elevation: 2,
       color: theme.colorScheme.surface,
       child: ConstrainedBox(
@@ -1902,6 +1937,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
               icon: Icon(tab.isLoading ? Icons.close : Icons.refresh),
               tooltip: tab.isLoading ? '停止' : '刷新',
               onPressed: () {
+                _collapseUrlBar();
                 if (tab.isLoading) {
                   tab.controller.loadRequest(Uri.parse('about:blank'));
                 } else {
@@ -1912,6 +1948,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
             PopupMenuButton<String>(
               tooltip: '菜单',
               onSelected: (value) {
+                _collapseUrlBar();
                 switch (value) {
                   case 'forward':
                     _currentTab.controller.goForward();
@@ -2070,7 +2107,14 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
         ? theme.colorScheme.onSurface
         : theme.colorScheme.onSurface.withAlpha(89);
     return InkWell(
-      onTap: enabled ? onTap : null,
+      onTap: enabled
+          ? () {
+              // 点击工具栏即视为离开地址栏编辑态：收起面板与软键盘，
+              // 恢复 WebView 可视区（否则编辑态常驻会压缩页面）
+              _collapseUrlBar();
+              onTap();
+            }
+          : null,
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
