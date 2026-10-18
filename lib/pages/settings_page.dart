@@ -5,6 +5,7 @@ import '../pages/bookmarks_page.dart';
 import '../pages/downloads_page.dart';
 import '../pages/history_page.dart';
 import '../pages/passwords_page.dart';
+import '../pages/quick_engines_page.dart';
 import '../pages/search_settings_page.dart';
 import '../services/browser_data_service.dart';
 import '../services/settings_service.dart';
@@ -46,20 +47,24 @@ class SettingsPage extends StatelessWidget {
                 context,
                 icon: Icons.search_outlined,
                 title: '启用搜索工具栏',
-                subtitle: '在网页顶部或底部常驻搜索框',
+                subtitle: '在搜索结果页底部显示引擎快捷切换栏',
                 value: settings.searchToolbar,
                 onChanged: settings.setSearchToolbar,
               ),
-              if (settings.searchToolbar)
-                ListTile(
-                  leading: const Icon(Icons.vertical_align_bottom),
-                  title: const Text('搜索工具栏位置'),
-                  subtitle: Text(
-                    settings.searchToolbarPosition == 'bottom' ? '屏幕底部' : '屏幕顶部',
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _showToolbarPositionDialog(context, settings),
-                ),
+              ListTile(
+                leading: const Icon(Icons.swap_horiz),
+                title: const Text('快捷搜索引擎'),
+                subtitle: const Text('管理搜索工具栏中显示的引擎'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const QuickEnginesPage(),
+                    ),
+                  );
+                },
+              ),
               _switchTile(
                 context,
                 icon: Icons.tab_outlined,
@@ -423,41 +428,6 @@ class SettingsPage extends StatelessWidget {
               child: const Text('保存'),
             ),
           ],
-        );
-      },
-    );
-  }
-
-  void _showToolbarPositionDialog(
-      BuildContext context, SettingsService settings) {
-    showDialog(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('搜索工具栏位置'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _choiceTile(
-                dialogContext,
-                title: '屏幕顶部',
-                selected: settings.searchToolbarPosition != 'bottom',
-                onTap: () {
-                  settings.setSearchToolbarPosition('top');
-                  Navigator.pop(dialogContext);
-                },
-              ),
-              _choiceTile(
-                dialogContext,
-                title: '屏幕底部',
-                selected: settings.searchToolbarPosition == 'bottom',
-                onTap: () {
-                  settings.setSearchToolbarPosition('bottom');
-                  Navigator.pop(dialogContext);
-                },
-              ),
-            ],
-          ),
         );
       },
     );

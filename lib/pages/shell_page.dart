@@ -23,6 +23,7 @@ import '../pages/tabs_page.dart';
 import '../services/ad_rule_service.dart';
 import '../services/browser_data_service.dart';
 import '../services/download_service.dart';
+import '../services/quick_engine_service.dart';
 import '../services/settings_service.dart';
 import '../services/site_settings_service.dart';
 import '../services/sniffer_service.dart';
@@ -53,8 +54,6 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   final GlobalKey<HomePageState> _homeKey = GlobalKey<HomePageState>();
   final TextEditingController _urlController = TextEditingController();
   final FocusNode _urlFocusNode = FocusNode();
-  final TextEditingController _searchToolbarController =
-      TextEditingController();
   final MethodChannel _volumeChannel = const MethodChannel(_volumeChannelName);
 
   bool _canGoBack = false;
@@ -91,7 +90,6 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     _volumeChannel.setMethodCallHandler(null);
     _urlController.dispose();
     _urlFocusNode.dispose();
-    _searchToolbarController.dispose();
     _findController.dispose();
     _suggestionDebounce?.cancel();
     _suggestionHideTimer?.cancel();
@@ -100,6 +98,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
 
   Future<void> _initApp() async {
     await SettingsService.instance.load();
+    await QuickEngineService.instance.init();
     await DownloadService.instance.init();
     await AdRuleService.instance.init();
     await SiteSettingsService.instance.init();
@@ -400,6 +399,14 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     try {
       await tab.controller.runJavaScript(script);
     } catch (_) {}
+    // 搜索引擎快捷切换栏（移植自《移动端搜索引擎快捷切换》userscript）
+    if (settings.searchToolbar && isSearchEngineUrl(tab.url)) {
+      try {
+        await tab.controller.runJavaScript(
+          buildEngineSwitcherScript(QuickEngineService.instance.engines),
+        );
+      } catch (_) {}
+    }
     // 站点级图片阻止
     final host = SiteSettingsService.hostOf(tab.url);
     if (host.isNotEmpty && SiteSettingsService.instance.imagesBlocked(host)) {
@@ -1409,11 +1416,6 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
                 _buildTabBar(),
               if (_appReady &&
                   !_currentTab.isHome &&
-                  SettingsService.instance.searchToolbar &&
-                  SettingsService.instance.searchToolbarPosition == 'top')
-                _buildSearchToolbar(),
-              if (_appReady &&
-                  !_currentTab.isHome &&
                   _suggestionOpen)
                 _buildSuggestionPanel(),
               Expanded(
@@ -1430,11 +1432,6 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
                         : _buildWebViewStack())
                     : const SizedBox.shrink(),
               ),
-              if (_appReady &&
-                  !_currentTab.isHome &&
-                  SettingsService.instance.searchToolbar &&
-                  SettingsService.instance.searchToolbarPosition == 'bottom')
-                _buildSearchToolbar(),
               if (_appReady) _buildBottomToolbar(),
             ],
           ),
@@ -1448,63 +1445,6 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   }
 
   // ---- 搜索工具栏（Via：启用搜索工具栏） ----
-
-  Widget _buildSearchToolbar() {
-    final theme = Theme.of(context);
-    final settings = SettingsService.instance;
-    final rect = settings.searchBoxStyle == 'rect';
-    final engine = settings.effectiveSearchEngine;
-    return Material(
-      color: theme.colorScheme.surface,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 4, 12, 6),
-        child: SizedBox(
-          height: 40,
-          child: TextField(
-            controller: _searchToolbarController,
-            style: theme.textTheme.bodyMedium,
-            textInputAction: TextInputAction.search,
-            onSubmitted: (value) {
-              if (value.trim().isEmpty) return;
-              _submitInput(value);
-              _searchToolbarController.clear();
-            },
-            decoration: InputDecoration(
-              hintText: '搜索或输入网址',
-              isDense: true,
-              filled: true,
-              fillColor: theme.colorScheme.surfaceContainerHighest,
-              prefixIcon: Padding(
-                padding: const EdgeInsets.only(left: 10, right: 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.search, size: 16),
-                    const SizedBox(width: 3),
-                    Text(
-                      engine.label,
-                      style: theme.textTheme.labelSmall,
-                    ),
-                  ],
-                ),
-              ),
-              prefixIconConstraints:
-                  const BoxConstraints(minWidth: 0, minHeight: 0),
-              contentPadding: rect
-                  ? const EdgeInsets.symmetric(horizontal: 12, vertical: 10)
-                  : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              border: rect
-                  ? OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide.none,
-                    )
-                  : const UnderlineInputBorder(),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 
   // ---- 标签栏 ----
 

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/browser_data_service.dart';
 import '../services/settings_service.dart';
 import '../utils/url_utils.dart';
+import 'quick_engines_page.dart';
 
 /// 搜索设置页（参考 Via 设置-通用-搜索设置）
 class SearchSettingsPage extends StatelessWidget {
@@ -23,6 +24,20 @@ class SearchSettingsPage extends StatelessWidget {
               if (settings.searchEngine == 'custom')
                 _customSearchUrlTile(context, settings),
               _quickWordTile(context, settings),
+              ListTile(
+                leading: const Icon(Icons.swap_horiz),
+                title: const Text('快捷搜索引擎'),
+                subtitle: const Text('管理搜索结果页底部工具栏中的引擎'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const QuickEnginesPage(),
+                    ),
+                  );
+                },
+              ),
               const Divider(),
 
               _sectionHeader(context, '搜索建议'),
