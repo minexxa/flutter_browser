@@ -97,33 +97,49 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   }
 
   Future<void> _initApp() async {
-    await SettingsService.instance.load();
-    await QuickEngineService.instance.init();
-    await DownloadService.instance.init();
-    await AdRuleService.instance.init();
-    await SiteSettingsService.instance.init();
-    _setupVolumeChannel();
-    WakelockPlus.toggle(enable: SettingsService.instance.keepScreenOn);
-    await _applyCookieAccept(SettingsService.instance.cookieAccept);
+    try {
+      await SettingsService.instance.load();
+      await QuickEngineService.instance.init();
+      await DownloadService.instance.init();
+      await AdRuleService.instance.init();
+      await SiteSettingsService.instance.init();
+      _setupVolumeChannel();
+      // 屏幕常亮不阻塞启动：channel 异常静默降级
+      WakelockPlus.toggle(enable: SettingsService.instance.keepScreenOn)
+          .catchError((_) {});
+      await _applyCookieAccept(SettingsService.instance.cookieAccept);
 
-    final settings = SettingsService.instance;
-    if (settings.startPage == 'restore') {
-      final saved = await BrowserDataService.instance.loadOpenTabs();
-      for (final item in saved) {
+      final settings = SettingsService.instance;
+      if (settings.startPage == 'restore') {
+        final saved = await BrowserDataService.instance.loadOpenTabs();
+        for (final item in saved) {
+          if (!mounted) return;
+          final url = item['url'] ?? '';
+          if (url.isNotEmpty) {
+            await _addTab(url: url, title: item['title'] ?? '新标签页');
+          }
+        }
+      } else if (settings.startPage == 'custom' &&
+          settings.startPageUrl.isNotEmpty) {
         if (!mounted) return;
-        final url = item['url'] ?? '';
-        if (url.isNotEmpty) {
-          await _addTab(url: url, title: item['title'] ?? '新标签页');
+        await _addTab(url: settings.startPageUrl, title: '新标签页');
+      }
+      if (_tabs.isEmpty) {
+        if (!mounted) return;
+        await _addTab();
+      }
+    } catch (e, stack) {
+      // 初始化任一步骤失败都不阻塞 UI：记录日志并兜底创建标签页，
+      // 保证界面可见（否则 _appReady 永远为 false，表现为白屏）
+      debugPrint('应用初始化异常（UI 仍将渲染）: $e\n$stack');
+      if (!mounted) return;
+      if (_tabs.isEmpty) {
+        try {
+          await _addTab();
+        } catch (e2) {
+          debugPrint('兜底创建标签页失败: $e2');
         }
       }
-    } else if (settings.startPage == 'custom' &&
-        settings.startPageUrl.isNotEmpty) {
-      if (!mounted) return;
-      await _addTab(url: settings.startPageUrl, title: '新标签页');
-    }
-    if (_tabs.isEmpty) {
-      if (!mounted) return;
-      await _addTab();
     }
     if (!mounted) return;
     setState(() => _appReady = true);
@@ -217,50 +233,58 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
     final backgroundColor = mounted
         ? Theme.of(context).colorScheme.surface
         : const Color(0xFFFFFFFF);
-    tab.controller
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(backgroundColor)
-      ..setNavigationDelegate(_buildNavigationDelegate(tab));
+    // 平台配置失败不阻塞标签页创建：WebView 仍可用，仅个别设置降级
+    // （未兜底时此处异常会中断 _initApp，导致 _appReady 不置位而白屏）
+    try {
+      await tab.controller.setJavaScriptMode(JavaScriptMode.unrestricted);
+      await tab.controller.setBackgroundColor(backgroundColor);
+      await tab.controller.setNavigationDelegate(_buildNavigationDelegate(tab));
 
-    await tab.controller.addJavaScriptChannel(
-      'DownloadBridge',
-      onMessageReceived: _onDownloadBridgeMessage,
-    );
-    await tab.controller.addJavaScriptChannel(
-      'PasswordBridge',
-      onMessageReceived: _onPasswordBridgeMessage,
-    );
-    await tab.controller.addJavaScriptChannel(
-      'ClipboardBridge',
-      onMessageReceived: _onClipboardBridgeMessage,
-    );
-    await tab.controller.addJavaScriptChannel(
-      'ImageBridge',
-      onMessageReceived: _onImageBridgeMessage,
-    );
-    await tab.controller.addJavaScriptChannel(
-      'FindBridge',
-      onMessageReceived: _onFindBridgeMessage,
-    );
-    await tab.controller.addJavaScriptChannel(
-      'ReaderBridge',
-      onMessageReceived: _onReaderBridgeMessage,
-    );
-    await tab.controller.addJavaScriptChannel(
-      'ResourceBridge',
-      onMessageReceived: (message) => _onResourceBridgeMessage(tab, message),
-    );
-    await tab.controller.setUserAgent(_effectiveUA(tab));
-    applyFontSize(tab.controller, settings.fontSize.textZoom);
-    applyForceZoom(tab.controller, settings.forceZoom);
-    applyMediaGesture(tab.controller, settings.saveData);
-    applyGeolocationEnabled(tab.controller, settings.geolocationAccess);
-    await _applySiteSettings(tab);
+      await tab.controller.addJavaScriptChannel(
+        'DownloadBridge',
+        onMessageReceived: _onDownloadBridgeMessage,
+      );
+      await tab.controller.addJavaScriptChannel(
+        'PasswordBridge',
+        onMessageReceived: _onPasswordBridgeMessage,
+      );
+      await tab.controller.addJavaScriptChannel(
+        'ClipboardBridge',
+        onMessageReceived: _onClipboardBridgeMessage,
+      );
+      await tab.controller.addJavaScriptChannel(
+        'ImageBridge',
+        onMessageReceived: _onImageBridgeMessage,
+      );
+      await tab.controller.addJavaScriptChannel(
+        'FindBridge',
+        onMessageReceived: _onFindBridgeMessage,
+      );
+      await tab.controller.addJavaScriptChannel(
+        'ReaderBridge',
+        onMessageReceived: _onReaderBridgeMessage,
+      );
+      await tab.controller.addJavaScriptChannel(
+        'ResourceBridge',
+        onMessageReceived: (message) => _onResourceBridgeMessage(tab, message),
+      );
+      await tab.controller.setUserAgent(_effectiveUA(tab));
+      applyFontSize(tab.controller, settings.fontSize.textZoom);
+      applyForceZoom(tab.controller, settings.forceZoom);
+      applyMediaGesture(tab.controller, settings.saveData);
+      applyGeolocationEnabled(tab.controller, settings.geolocationAccess);
+      await _applySiteSettings(tab);
+    } catch (e) {
+      debugPrint('WebView 平台配置失败（标签页仍可用）: $e');
+    }
 
     _tabs.add(tab);
     _currentIndex = _tabs.length - 1;
     if (url.isNotEmpty) {
-      await tab.controller.loadRequest(Uri.parse(url));
+      final uri = Uri.tryParse(url);
+      if (uri != null) {
+        await tab.controller.loadRequest(uri);
+      }
     }
     if (!mounted) return;
     setState(() {});
@@ -1419,8 +1443,10 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
                   _suggestionOpen)
                 _buildSuggestionPanel(),
               Expanded(
-                child: _appReady
-                    ? (_currentTab.isHome
+                child: !_appReady
+                    // 初始化期间显示加载占位，避免白屏
+                    ? const Center(child: CircularProgressIndicator())
+                    : (_currentTab.isHome
                         ? HomePage(
                             key: _homeKey,
                             onSearch: _openUrl,
@@ -1429,8 +1455,7 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
                             onOpenDownloads: _openDownloads,
                             onClearHistory: _reloadHome,
                           )
-                        : _buildWebViewStack())
-                    : const SizedBox.shrink(),
+                        : _buildWebViewStack()),
               ),
               if (_appReady) _buildBottomToolbar(),
             ],
