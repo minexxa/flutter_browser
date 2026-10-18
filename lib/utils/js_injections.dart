@@ -1,5 +1,9 @@
 // 网页内容注入脚本（广告拦截 CSS / 无图 / 省流 / 强制缩放 / 下载拦截）
 
+import 'dart:convert';
+
+import '../models/quick_engine.dart';
+
 /// 内建广告拦截 CSS（仅拦截常见广告，参考 Via「内建规则仅拦截常见广告」）
 const String kAdBlockCss = '''
 ins.adsbygoogle, [id^="ad-"], [id^="ad_"], [class^="ad-"], [class^="ad_"],
@@ -371,4 +375,195 @@ String buildPageFinishedScript({
   scripts.add(kResourceSnifferJs);
   scripts.add(kDownloadHookJs);
   return scripts.join('\n');
+}
+
+
+/// 搜索引擎切换栏（移植"移动端搜索引擎快捷切换"脚本）：
+/// 在搜索结果页底部渲染引擎 pill 栏，点击即用当前关键词跳转其他引擎。
+/// 引擎列表由 Dart 生成式注入；无搜索关键词时自动移除栏。
+String buildEngineSwitcherScript(List<QuickEngine> engines) {
+  final enginesJson = jsonEncode(
+    engines.map((e) => {'name': e.name, 'host': e.host, 'url': e.url}).toList(),
+  );
+  return '''
+(function(){
+  if (window.__viaEngineSwitcher) return;
+  window.__viaEngineSwitcher = true;
+
+  var ENGINES = $enginesJson;
+
+  function buildEngineUrl(urlTemplate, query) {
+    if (urlTemplate.indexOf('{q}') !== -1) {
+      return urlTemplate.replace(/\\{q\\}/g, encodeURIComponent(query));
+    }
+    var separator = urlTemplate.indexOf('?') !== -1 ? '&' : '?';
+    return urlTemplate + separator + 'q=' + encodeURIComponent(query);
+  }
+
+  function getSearchQuery() {
+    var q = '';
+    var searchParams = new URLSearchParams(window.location.search);
+    q = searchParams.get('q') || searchParams.get('word') || searchParams.get('wd') ||
+        searchParams.get('keyword') || searchParams.get('query') || searchParams.get('text');
+    if (!q && window.location.hash.indexOf('?') !== -1) {
+      var hashQuery = window.location.hash.substring(window.location.hash.indexOf('?'));
+      var hashParams = new URLSearchParams(hashQuery);
+      q = hashParams.get('q') || hashParams.get('word') || hashParams.get('wd') ||
+          hashParams.get('keyword') || hashParams.get('query') || hashParams.get('text');
+    }
+    if (!q) {
+      var input = document.querySelector('input[type="search"], input[name="q"], input[name="wd"], input[name="word"], input[name="keyword"], input[name="text"]');
+      if (input && input.value) q = input.value;
+    }
+    return q ? q.trim() : '';
+  }
+
+  function isCurrentEngine(host) {
+    if (!host) return false;
+    var currentUrl = window.location.href.toLowerCase();
+    var targetHost = host.toLowerCase();
+    if (targetHost.indexOf('/') !== -1) {
+      return currentUrl.indexOf(targetHost) !== -1;
+    }
+    if (targetHost.indexOf('yandex') !== -1 && targetHost.indexOf('/images') === -1 && currentUrl.indexOf('/images') !== -1) {
+      return false;
+    }
+    return window.location.hostname.indexOf(targetHost) !== -1;
+  }
+
+  function removeSwitcher() {
+    var bar = document.getElementById('mobile-engine-switcher-bar');
+    if (bar) bar.remove();
+    var style = document.getElementById('mobile-engine-switcher-style');
+    if (style) style.remove();
+  }
+
+  function renderSwitcher() {
+    var query = getSearchQuery();
+    if (!query) { removeSwitcher(); return; }
+
+    if (!document.getElementById('mobile-engine-switcher-style')) {
+      var style = document.createElement('style');
+      style.id = 'mobile-engine-switcher-style';
+      style.textContent = [
+        '#mobile-engine-switcher-bar {',
+        '  position: fixed !important;',
+        '  bottom: 50px !important;',
+        '  left: 0 !important; right: 0 !important; width: 100% !important;',
+        '  z-index: 2147483647 !important;',
+        '  display: flex !important; align-items: center !important; gap: 8px !important;',
+        '  padding: 6px 10px 6px 10px !important;',
+        '  background-color: #ffffff !important;',
+        '  border-top: 1px solid rgba(0,0,0,0.08) !important;',
+        '  overflow-x: auto !important; white-space: nowrap !important;',
+        '  -webkit-overflow-scrolling: touch !important; box-sizing: border-box !important;',
+        '}',
+        '@media (prefers-color-scheme: dark) {',
+        '  #mobile-engine-switcher-bar { background-color: #1c1c1e !important; border-top-color: rgba(255,255,255,0.1) !important; }',
+        '}',
+        '#mobile-engine-switcher-bar::-webkit-scrollbar { display: none !important; }',
+        '.engine-pill-btn {',
+        '  flex: 0 0 auto !important; height: 27px !important; padding: 0 14px !important;',
+        '  border-radius: 9999px !important; font-size: 13px !important;',
+        '  text-decoration: none !important; color: #1a1a1a !important;',
+        '  background-color: #ffffff !important; border: 1px solid #d5d5d5 !important;',
+        '  display: inline-flex !important; align-items: center !important; justify-content: center !important;',
+        '  box-sizing: border-box !important; user-select: none !important;',
+        '  -webkit-tap-highlight-color: transparent !important;',
+        '  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif !important;',
+        '}',
+        '@media (prefers-color-scheme: dark) {',
+        '  .engine-pill-btn { color: #e5e5e7 !important; background-color: #1c1c1e !important; border-color: #3a3a3c !important; }',
+        '}',
+        '.engine-pill-btn.active {',
+        '  border-color: #1a73e8 !important; color: #1a73e8 !important;',
+        '  background-color: rgba(26,115,232,0.1) !important;',
+        '}',
+        '@media (prefers-color-scheme: dark) {',
+        '  .engine-pill-btn.active { border-color: #6ea8fe !important; color: #6ea8fe !important; background-color: rgba(110,168,254,0.16) !important; }',
+        '}',
+        'body { padding-bottom: 92px !important; }',
+      ].join('\\n');
+      document.head.appendChild(style);
+    }
+
+    var bar = document.getElementById('mobile-engine-switcher-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'mobile-engine-switcher-bar';
+      document.body.appendChild(bar);
+    } else {
+      bar.innerHTML = '';
+    }
+
+    ENGINES.forEach(function(engine){
+      var btn = document.createElement('a');
+      btn.className = 'engine-pill-btn' + (isCurrentEngine(engine.host) ? ' active' : '');
+      btn.textContent = engine.name;
+      btn.href = 'javascript:void(0);';
+      btn.addEventListener('click', function(e){
+        e.preventDefault();
+        if (isCurrentEngine(engine.host)) return;
+        var currentQuery = getSearchQuery();
+        if (currentQuery) {
+          window.location.href = buildEngineUrl(engine.url, currentQuery);
+        }
+      });
+      bar.appendChild(btn);
+    });
+
+    if (typeof syncSwitcherPosition === 'function') syncSwitcherPosition();
+  }
+
+  function syncSwitcherPosition() {
+    var bar = document.getElementById('mobile-engine-switcher-bar');
+    if (!bar || !window.visualViewport) return;
+    var vv = window.visualViewport;
+    var offsetBottom = window.innerHeight - (vv.height + vv.offsetTop);
+    bar.style.bottom = (50 + Math.max(0, offsetBottom)) + 'px';
+  }
+
+  renderSwitcher();
+
+  var lastUrl = location.href;
+  var observer = new MutationObserver(function(){
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      setTimeout(renderSwitcher, 300);
+    }
+  });
+  if (document.body) {
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncSwitcherPosition);
+    window.visualViewport.addEventListener('scroll', syncSwitcherPosition);
+  }
+  window.addEventListener('scroll', syncSwitcherPosition, { passive: true });
+  window.addEventListener('resize', syncSwitcherPosition);
+})();
+''';
+}
+
+/// 判断 URL 是否为搜索引擎结果页（对齐脚本 @match 的域名集合）
+bool isSearchEngineUrl(String url) {
+  final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+  if (host.isEmpty) return false;
+  const engineHosts = <String>[
+    'google.com', 'google.com.hk', 'google.co.jp', 'google.co.uk',
+    'google.de', 'google.fr', 'google.ca', 'google.com.tw',
+    'baidu.com', 'bing.com', 'yandex.com', 'yandex.ru',
+    'sogou.com', 'so.com', 'brave.com', 'duckduckgo.com',
+    'sm.cn', 'toutiao.com', 'quark.cn', '360.cn',
+    'yahoo.com', 'yahoo.co.jp', 'ecosia.org', 'startpage.com',
+    'qwant.com', 'naver.com', 'daum.net', 'coccoc.com',
+    'ask.com', 'aol.com', 'metaso.cn', 'kimi.com',
+    'perplexity.ai', 'chatgpt.com', 'kagi.com', 'mojeek.com',
+    'presearch.com', 'zhihu.com',
+  ];
+  for (final engineHost in engineHosts) {
+    if (host == engineHost || host.endsWith('.$engineHost')) return true;
+  }
+  return false;
 }
