@@ -56,7 +56,6 @@ class SettingsService extends ChangeNotifier {
     'searchBoxBlur': false,
     'addressBarContent': 'url',
     'searchToolbar': false,
-    'searchToolbarPosition': 'top',
     'tabBarEnabled': false,
     'cookieAccept': true,
     'browserIdentity': 'android',
@@ -114,11 +113,8 @@ class SettingsService extends ChangeNotifier {
 
   /// 地址栏内容：'url' 网址 / 'domain' 域名 / 'title' 标题
   String get addressBarContent => _values['addressBarContent'] as String;
+  /// 搜索工具栏：在搜索结果页底部显示引擎快捷切换栏
   bool get searchToolbar => _values['searchToolbar'] as bool;
-
-  /// 搜索工具栏位置：'top' / 'bottom'
-  String get searchToolbarPosition =>
-      _values['searchToolbarPosition'] as String;
   bool get tabBarEnabled => _values['tabBarEnabled'] as bool;
   bool get cookieAccept => _values['cookieAccept'] as bool;
   String get browserIdentity => _values['browserIdentity'] as String;
@@ -234,8 +230,6 @@ class SettingsService extends ChangeNotifier {
   void setSearchBoxBlur(bool value) => _set('searchBoxBlur', value);
   void setAddressBarContent(String value) => _set('addressBarContent', value);
   void setSearchToolbar(bool value) => _set('searchToolbar', value);
-  void setSearchToolbarPosition(String value) =>
-      _set('searchToolbarPosition', value);
   void setTabBarEnabled(bool value) => _set('tabBarEnabled', value);
   void setCookieAccept(bool value) => _set('cookieAccept', value);
   void setNoImage(bool value) => _set('noImage', value);
