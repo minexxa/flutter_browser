@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -64,6 +66,8 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   bool _finding = false;
   String _findCount = '0/0';
   double? _edgeDragStartX;
+  double? _edgeDragStartY;
+  Duration? _edgeDragStartTime;
   final TextEditingController _findController = TextEditingController();
 
   // 地址栏建议
@@ -2007,30 +2011,58 @@ class ShellPageState extends State<ShellPage> with WidgetsBindingObserver {
   }
 
   Widget _buildWebViewStack() {
+    // 让 WebView 优先接管所有触摸（纵向/横向拖动、缩放），
+    // 避免被外层 Flutter 手势识别器抢占导致网页无法滑动
     final stack = IndexedStack(
       index: _currentIndex,
       children: _tabs.map((tab) {
-        return WebViewWidget(controller: tab.controller);
+        return WebViewWidget(
+          controller: tab.controller,
+          gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+            Factory<OneSequenceGestureRecognizer>(
+              () => EagerGestureRecognizer(),
+            ),
+          },
+        );
       }).toList(),
     );
     if (!SettingsService.instance.gestureSwitchTab) return stack;
     final width = MediaQuery.sizeOf(context).width;
-    return GestureDetector(
-      onHorizontalDragStart: (details) {
-        _edgeDragStartX = details.localPosition.dx;
+    // 使用 Listener 仅旁观原始指针事件，不参与手势竞技场，不影响 WebView 滑动
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (e) {
+        _edgeDragStartX = e.localPosition.dx;
+        _edgeDragStartY = e.localPosition.dy;
+        _edgeDragStartTime = e.timeStamp;
       },
-      onHorizontalDragEnd: (details) {
+      onPointerUp: (e) {
         final startX = _edgeDragStartX;
+        final startY = _edgeDragStartY;
+        final startTime = _edgeDragStartTime;
         _edgeDragStartX = null;
-        if (startX == null) return;
-        final velocity = details.primaryVelocity ?? 0;
-        const edge = 32;
-        const threshold = 300; // px/s
-        if (startX < edge && velocity > threshold) {
+        _edgeDragStartY = null;
+        _edgeDragStartTime = null;
+        if (startX == null || startY == null || startTime == null) return;
+        final dx = e.localPosition.dx - startX;
+        final dy = e.localPosition.dy - startY;
+        final ms = (e.timeStamp - startTime).inMilliseconds;
+        const edge = 32.0;
+        const minDistance = 80.0;
+        // 必须以横向为主，且在边缘起手、够快够远才切换标签
+        if (dx.abs() < minDistance || dx.abs() < dy.abs() * 2 || ms > 600) {
+          return;
+        }
+        if (startX < edge && dx > 0) {
           _switchTabByGesture(-1);
-        } else if (startX > width - edge && velocity < -threshold) {
+        } else if (startX > width - edge && dx < 0) {
           _switchTabByGesture(1);
         }
+      },
+      onPointerCancel: (_) {
+        _edgeDragStartX = null;
+        _edgeDragStartY = null;
+        _edgeDragStartTime = null;
       },
       child: stack,
     );
